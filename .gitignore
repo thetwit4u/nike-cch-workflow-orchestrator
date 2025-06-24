@@ -1,0 +1,38 @@
+# Cursor
+.cursor/
+.cursor-history/
+refprojects/
+docs/
+
+# IDE and Editor Files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+.env
+
+# Node.js / CDK
+node_modules/
+cdk.out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Logs
+*.log
+
+# CDK Local Configuration
+cdk.local.json 
+PLANNING.md
+TASKS.md
+/schemas/

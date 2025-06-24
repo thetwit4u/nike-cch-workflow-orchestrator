@@ -1,0 +1,14 @@
+# Core workflow engine
+langgraph==0.4.8
+
+# AWS SDK for Python
+boto3==1.38.32
+
+# YAML parsing for workflow definitions
+pyyaml==6.0.1
+
+# Core LangChain components for data structures
+langchain-core==0.3.64
+
+# Data validation and settings management
+pydantic==2.8.2 

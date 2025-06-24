@@ -1,0 +1,113 @@
+{
+    "deliveryId": "5000164201-MEM",
+    "deliveryLifecycleStatus": "IN_TRANSIT",
+    "plannedOriginLocation": {
+      "locationId": "VNSGN",
+      "name": "Ho Chi Minh - VN",
+      "address": { "cityName": "Ho Chi Minh", "countryCode": "VN" }
+    },
+    "plannedDestinationLocation": {
+      "locationId": "00001104",
+      "name": "NIKE MEMPHIS DC",
+      "address": { "cityName": "MEMPHIS", "countryCode": "US" }
+    },
+    "declarationRefs": [],
+    "deliveryItems": [
+      {
+        "deliveryItemId": "2001731897-000010",
+        "productCode": "DM3975-010",
+        "description": null,
+        "orderedQuantity": null,
+        "packedQuantity": 3096,
+        "sizeCode": "MISC",
+        "baseUOM": "EA",
+        "measures": {
+          "netWeight": 2161.008,
+          "grossWeight": 2161.008,
+          "volume": 42.381,
+          "weightUOM": "KG",
+          "volumeUOM": "M3"
+        },
+        "commodity": {
+          "hsCode": null,
+          "originCountryCode": "VN",
+          "divisionCode": "30"
+        },
+        "tradeTransaction": {
+          "currencyCode": null,
+          "invoiceId": "3601159900",
+          "valuation": {
+            "methodCode": "1",
+            "totalAmount": null,
+            "valuationAdjustments": []
+          }
+        },
+        "supportingDocuments": [
+          { "typeCode": "PURCHASE_ORDER", "referenceText": "6201148273" },
+          { "typeCode": "SALES_ORDER", "referenceText": "5022576459" },
+          { "typeCode": "DELIVERY_NOTE", "referenceText": "2001731897" },
+          { "typeCode": "INVOICE", "referenceText": "3601159900" }
+        ]
+      }
+    ],
+    "parties": [
+      {
+        "partyId": "VT",
+        "name": "TKG TAEKWANG CO., LTD",
+        "roleCode": "MF",
+        "address": {
+          "line": "258 9 AN DONG", "cityName": "KIMHAE CITY",
+          "postcodeId": "62120", "countryCode": "KR"
+        }
+      },
+      {
+        "partyId": "APLL",
+        "name": "APL LOGISTICS AMERICAS, LTD",
+        "roleCode": "FW",
+        "address": {
+          "line": "17600 N. Perimeter Drive", "cityName": "Scottsdale",
+          "postcodeId": "85255", "countryCode": "US"
+        }
+      },
+      {
+        "partyId": "HLCU",
+        "name": "Hapag-Lloyd AG",
+        "roleCode": "CA",
+        "address": {
+          "line": "ballindamm 25", "cityName": "HAMBURG",
+          "postcodeId": "20095", "countryCode": "DE"
+        }
+      }
+    ],
+    "consignments": [
+      {
+        "consignmentId": "5000164201-MEM-C1",
+        "transportModeCode": "1",
+        "grossWeight": 2399.4,
+        "totalPackageQuantity": 258,
+        "loadingLocation": {
+          "locationId": "VNSGN",
+          "name": "Ho Chi Minh - VN",
+          "address": { "cityName": "Ho Chi Minh", "countryCode": "VN" }
+        },
+        "unloadingLocation": {
+          "locationId": "USLAX",
+          "name": "Los Angeles - US",
+          "address": { "cityName": "Los Angeles", "countryCode": "US" }
+        },
+        "transportContractDocument": {
+          "documentId": "MEMPHISBOL12345",
+          "typeCode": "705"
+        },
+        "borderTransportMeans": {
+          "id": "VNUS2025",
+          "name": "MAERSK SKARSTIND",
+          "typeCode": "10",
+          "registrationNationalityCode": null
+        },
+        "packaging": [
+          { "typeCode": "CT", "quantity": 258 }
+        ]
+      }
+    ]
+  }
