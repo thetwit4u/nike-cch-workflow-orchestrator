@@ -61,7 +61,7 @@ class CommandParser:
             "workflowInstanceId": self.state["context"].get("workflowInstanceId"),
             "correlationId": self.state["context"].get("correlationId"),
             "commandId": str(uuid.uuid4()),
-            "replyToQueueUrl": os.environ.get("REPLY_QUEUE_URL"),
+            "replyToQueueUrl": os.environ.get("COMMAND_QUEUE_URL"),
             "source": "WorkflowOrchestrator",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }

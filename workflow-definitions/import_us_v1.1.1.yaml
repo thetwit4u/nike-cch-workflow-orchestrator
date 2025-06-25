@@ -58,6 +58,7 @@ nodes:
       - filingPacksStatus
       - filingPacksError
       - importFilingPacks
+      - deliverySetImportEnrichedURI
     on_response: Check_Start_Import_Filing_Result # Go directly to check the result
     on_success: End_Workflow
     on_failure: Handle_Error

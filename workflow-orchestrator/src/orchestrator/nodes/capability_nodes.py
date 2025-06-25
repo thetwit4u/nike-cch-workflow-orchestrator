@@ -26,16 +26,10 @@ scheduler_client = boto3.client('scheduler')
 iam_client = boto3.client('iam')
 
 # Environment variables for queue URLs, set by the CDK
-REPLY_QUEUE_URL = os.environ.get("REPLY_QUEUE_URL")
-IMPORT_QUEUE_URL = os.environ.get("IMPORT_QUEUE_URL")
-EXPORT_QUEUE_URL = os.environ.get("EXPORT_QUEUE_URL")
 
-# A simple map to get the correct queue URL for a capability
-CAPABILITY_QUEUE_MAP = {
-    "import#enrichment": IMPORT_QUEUE_URL,
-    "export#enrichment": EXPORT_QUEUE_URL,
-    # Add other capability mappings here
-}
+
+
+
 
 
 def _base_action(state: Dict[str, Any], config: Dict[str, Any], node_config: Dict[str, Any], action_logic_fn) -> Dict[str, Any]:

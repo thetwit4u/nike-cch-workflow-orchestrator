@@ -70,9 +70,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
     const definitionsBucketPrefix = 'cch-flow-definitions';
 
     const commandQueueName = `${mainPrefix}-command-queue-${env}${ownerSuffix}`;
-    const replyQueueName = `${mainPrefix}-reply-queue-${env}${ownerSuffix}`;
-    const importRequestQueueName = `${mainPrefix}-capability-import-request-queue-${env}${ownerSuffix}`;
-    const exportRequestQueueName = `${mainPrefix}-capability-export-request-queue-${env}${ownerSuffix}`;
+    
     const mockQueueName = `${mainPrefix}-mock-capability-queue-${env}${ownerSuffix}`;
     const stateTableName = `${mainPrefix}-workflow-state-table-${env}${ownerSuffix}`;
     const eventdataBucketName = `${mainPrefix}-eventdata-bucket-${env}${ownerSuffix}`;
@@ -275,20 +273,9 @@ export class CchWorkflowOrchestratorStack extends Stack {
       });
     }
 
-    const replyQueue = new sqs.Queue(this, 'OrchestratorReplyQueue', {
-      queueName: replyQueueName,
-      visibilityTimeout: Duration.seconds(300),
-    });
+    
 
-    const importRequestQueue = new sqs.Queue(this, 'ImportRequestQueue', {
-      queueName: importRequestQueueName,
-      visibilityTimeout: Duration.seconds(300),
-    });
-
-    const exportRequestQueue = new sqs.Queue(this, 'ExportRequestQueue', {
-      queueName: exportRequestQueueName,
-      visibilityTimeout: Duration.seconds(300),
-    });
+    
 
     // Create a mock capability queue for development environments
     let mockCapabilityQueue: sqs.Queue | undefined = undefined;
@@ -315,7 +302,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
 
     schedulerRole.addToPolicy(new iam.PolicyStatement({
       actions: ['sqs:SendMessage'],
-      resources: [importRequestQueue.queueArn, exportRequestQueue.queueArn],
+      resources: [],
     }));
 
     // DynamoDB Table for State Persistence
@@ -361,9 +348,8 @@ export class CchWorkflowOrchestratorStack extends Stack {
         DEFINITIONS_BUCKET_NAME: definitionsBucket.bucketName,
         COMMAND_QUEUE_URL: commandQueue.queueUrl,
         COMMAND_QUEUE_ARN: commandQueue.queueArn,
-        REPLY_QUEUE_URL: replyQueue.queueUrl,
-        IMPORT_QUEUE_URL: importRequestQueue.queueUrl,
-        EXPORT_QUEUE_URL: exportRequestQueue.queueUrl,
+
+        
         VERSION: new Date().toISOString(), // Force code update
         SCHEDULER_ROLE_ARN: schedulerRole.roleArn,
         
@@ -382,13 +368,12 @@ export class CchWorkflowOrchestratorStack extends Stack {
 
     // Add SQS event sources
     orchestratorLambda.addEventSource(new SqsEventSource(commandQueue));
-    orchestratorLambda.addEventSource(new SqsEventSource(replyQueue));
+    
 
     // Grant permissions
     commandQueue.grantConsumeMessages(orchestratorLambda);
-    replyQueue.grantConsumeMessages(orchestratorLambda);
-    importRequestQueue.grantSendMessages(orchestratorLambda);
-    exportRequestQueue.grantSendMessages(orchestratorLambda);
+    
+    
     
     // Grant permissions for mock capability queue if created
     if (mockCapabilityQueue) {
@@ -420,18 +405,19 @@ export class CchWorkflowOrchestratorStack extends Stack {
       index: 'app.py',
       handler: 'handler',
       environment: {
-        REPLY_QUEUE_URL: replyQueue.queueUrl,
+
         VERSION: new Date().toISOString(), // Force code update
       },
       timeout: Duration.seconds(30),
     });
 
     // Add SQS event sources for mock service
-    mockServiceLambda.addEventSource(new SqsEventSource(importRequestQueue));
-    mockServiceLambda.addEventSource(new SqsEventSource(exportRequestQueue));
+    if (mockCapabilityQueue) {
+      mockServiceLambda.addEventSource(new SqsEventSource(mockCapabilityQueue));
+    }
 
     // Grant permissions for mock service
-    replyQueue.grantSendMessages(mockServiceLambda);
+    
     eventdataBucket.grantRead(mockServiceLambda);
 
     new logs.LogRetention(this, 'MockServiceLogRetention', {
