@@ -1,4 +1,4 @@
-schema_version: "1.1.0" # Updated version reflecting new node types
+schema_version: "1.1.1" # Updated version reflecting new node types
 workflow_name: "Import US Workflow"
 workflow_id: "import_us_v1"
 entry_point: Check_Filing_Pack_Creation_Started
@@ -48,26 +48,21 @@ nodes:
     type: scheduled_request
     title: "Set/Update Schedule for Optimal Time of Filing (OTF)"
     description: "Schedules (or reschedules) the start of filing pack creation using the new OTF date. The existing schedule will be overridden."
-    capability_id: "import#create_filingpacks" # Note: plural
+    capability_id: "import#create_filingpacks"
+    input_keys: ["deliverySetURI"]
     schedule_parameters:
       date_context_key: "currentOtfDate"
-    # The output from the scheduled task will update these keys
-    output_keys:
-      - filingpackCreationStarted: true
-    on_response: Start_Filing_Pack_Processing # The node to go to when the scheduled task *responds*
-    on_success: End_Workflow # The main flow ends here after scheduling the task
+    on_schedule_set:
+      filingpackCreationStarted: true
+    request_output_keys:
+      - filingPacksStatus
+      - filingPacksError
+      - importFilingPacks
+    on_response: Check_Start_Import_Filing_Result # Go directly to check the result
+    on_success: End_Workflow
     on_failure: Handle_Error
 
   # This node is the entry point after the scheduled task has run
-  Start_Filing_Pack_Processing:
-    type: sync_call
-    title: "Import - Start Create Filing Packs"
-    description: "Processes the result of the filing pack creation."
-    capability_id: "core-process-response"
-    output_keys: ["importFilingPacks", "deliverySetEnrichedURI", "filingPacksStatus", "filingPacksError"]
-    on_success: Check_Start_Import_Filing_Result
-    on_failure: Handle_Error
-  
   # Check the result of the filing pack submission
   Check_Start_Import_Filing_Result:
     type: condition
@@ -91,15 +86,9 @@ nodes:
     type: async_request
     title: "Declaration Communicator : Start Import Filing"
     capability_id: "declaration_communicator#submit_import"
-    on_response: Process_Submit_Filing_Response # NEW: Process the response first
-    on_failure: Handle_Error
-
-  Process_Submit_Filing_Response:
-    type: sync_call
-    title: "Process Submission Response"
-    capability_id: "core-process-response"
-    output_keys: ["submitStatus", "submitError"]
-    on_success: Check_Submit_Success
+    input_keys: ["current_map_item"]
+    request_output_keys: ["submitStatus", "submitError"]
+    on_response: Check_Submit_Success # Go directly to check the result
     on_failure: Handle_Error
 
   Check_Submit_Success:

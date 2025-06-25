@@ -1,15 +1,29 @@
 import logging
 import os
 import json
+import uuid
+from datetime import datetime, timezone
 from typing import Dict, Any
 from functools import partial
+
+import boto3
+from botocore.exceptions import ClientError
+
 from clients.queue_client import QueueClient
-from langgraph.types import interrupt, Interrupt
+from utils.command_parser import CommandParser
+from clients.scheduler_client import SchedulerClient
+import dateutil.parser
+
+from langgraph.graph import Interrupt
+
+from orchestrator.state import WorkflowState
 
 logger = logging.getLogger(__name__)
 
-# This would be a shared client instance in a real app
+# Initialize clients and config loader
 queue_client = QueueClient()
+scheduler_client = boto3.client('scheduler')
+iam_client = boto3.client('iam')
 
 # Environment variables for queue URLs, set by the CDK
 REPLY_QUEUE_URL = os.environ.get("REPLY_QUEUE_URL")
@@ -49,97 +63,133 @@ def _base_action(state: Dict[str, Any], config: Dict[str, Any], node_config: Dic
     return {"context": updated_context}
 
 
-def _async_request_logic(state: Dict[str, Any], node_config: Dict[str, Any]) -> Dict[str, Any]:
-    """The specific logic for handling an 'async_request' node."""
-    context = state.get("context", {})
-    capability_id = node_config.get('capability_id')
-    target_queue_url = CAPABILITY_QUEUE_MAP.get(capability_id)
-    workflow_id = context.get('workflow_id')
-    instance_id = context.get('workflowInstanceId')
+def handle_sync_call(state: WorkflowState, node_config: dict, node_name: str) -> WorkflowState:
+    """
+    Handles a 'sync_call' node by pausing execution.
+    The workflow will wait for an external 'HITL_RESP' command to resume.
+    """
+    try:
+        logger.info(f"Executing 'sync_call' node '{node_name}'. Pausing for Human-in-the-Loop response.")
+        # We must interrupt execution here to wait for the HITL_RESP.
+        # A real implementation would also send a message to a UI or notification service.
+        raise Interrupt()
+    except Exception as e:
+        logger.error(f"Error in 'sync_call' node '{node_name}': {e}")
+        state["is_error"] = True
+        state["error_details"] = {"error": str(e), "node": node_name}
+    return state
 
-    # Preserve the original correlationId if present, otherwise fall back to instance_id
-    correlation_id = context.get('correlationId', instance_id)
 
-    # Get the output key(s) this node is waiting for
-    output_keys = node_config.get("request_output_keys", [])
-    missing_keys = [key for key in output_keys if key not in context]
-    if not missing_keys:
-        logger.info(f"Async output key(s) {output_keys} already present in context. Skipping async request for instance '{instance_id}'.")
-        return None
-    elif context.get('resumed', False):
-        # If this is a resume and keys are still missing, raise error
-        error_msg = f"Missing required async output key(s) after resume: {missing_keys} for instance '{instance_id}'"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
+def handle_async_request(state: WorkflowState, node_config: dict, node_name: str) -> WorkflowState:
+    """
+    Handles 'async_request' nodes by sending a command to a capability queue and then pausing.
+    """
+    try:
+        logger.info(f"Executing 'async_request' node '{node_name}' with config: {node_config}")
+        
+        command_parser = CommandParser(state, node_config)
+        command_payload = command_parser.create_command_message(command_type="ASYNC_REQ")
 
-    if not all([target_queue_url, workflow_id, instance_id]):
-        error_msg = f"Missing critical information for async request: queue='{target_queue_url}', workflow_id='{workflow_id}', instance_id='{instance_id}'"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
+        capability_id = node_config.get("capability_id")
+        queue_name = os.environ.get(f"CCH_CAPABILITY_{capability_id.upper()}_QUEUE_NAME")
+        if not queue_name:
+            raise ValueError(f"Queue for capability '{capability_id}' is not configured in environment variables.")
 
-    # Pass the definition URI so the capability can return it for stateless resume
-    workflow_definition_uri = state.get("workflow_definition_uri")
-    if not workflow_definition_uri:
-        raise ValueError("Cannot send async request: 'workflow_definition_uri' not found in state.")
+        queue_client = QueueClient()
+        queue_client.send_message(
+            queue_name=queue_name,
+            message_body=command_payload
+        )
+        logger.info(f"Successfully sent async request for capability '{capability_id}'. Pausing for response.")
+        
+        # We must interrupt execution here to wait for the async response
+        raise Interrupt()
 
-    # Remove __thread_id from the context before sending to the capability service
-    context_to_send = {k: v for k, v in context.items() if k != '__thread_id'}
+    except Exception as e:
+        logger.error(f"Error in 'async_request' node '{node_name}': {e}")
+        state["is_error"] = True
+        state["error_details"] = {"error": str(e), "node": node_name}
+    return state
 
-    # Construct the message payload
-    message = {
-        "header": {
-            "correlationId": correlation_id,
-            "replyToQueueUrl": REPLY_QUEUE_URL,
-            "source": "WorkflowOrchestrator",
-            "workflowDefinitionURI": workflow_definition_uri,
-        },
-        "body": {
-            "capability_id": capability_id,
-            "context": context_to_send
+
+def handle_scheduled_request(state: WorkflowState, node_config: dict, node_name: str) -> WorkflowState:
+    """
+    Handles 'scheduled_request' nodes by creating a one-time EventBridge schedule
+    that sends a command back to the orchestrator to execute at a future time.
+    It can also update the state immediately upon schedule creation.
+    """
+    try:
+        logger.info(f"Executing 'scheduled_request' node '{node_name}' with config: {node_config}")
+        
+        # 1. Immediate state update (if defined)
+        on_schedule_set = node_config.get("on_schedule_set")
+        if on_schedule_set:
+            state["data"].update(on_schedule_set)
+            logger.info(f"Updated state with on_schedule_set payload: {on_schedule_set}")
+
+        # 2. Initialize clients and get schedule parameters
+        scheduler_client = SchedulerClient()
+        schedule_params = node_config.get("schedule_parameters", {})
+        date_key = schedule_params.get("date_context_key")
+        if not date_key:
+            raise ValueError("'date_context_key' is missing in schedule_parameters")
+            
+        date_str = state["data"].get(date_key)
+        if not date_str:
+            raise ValueError(f"Context key '{date_key}' not found in state data.")
+        
+        schedule_time = dateutil.parser.isoparse(date_str)
+        schedule_time_str = schedule_time.strftime('%Y-%m-%dT%H:%M:%S')
+
+        # 3. Define the actual async request to be sent when the schedule fires
+        next_command_payload = {
+            "capability_id": node_config.get("capability_id"),
+            "input_keys": node_config.get("input_keys"),
+            "output_keys": node_config.get("request_output_keys"), # Use the new dedicated key
+            "on_response": node_config.get("on_response")
         }
-    }
 
-    # Log the sending of the ASYNC command in the same format as other SQS logs
-    logger.info(f"[clients.queue_client] Sending message to queue: {target_queue_url} for capability: {capability_id} [WorkflowID: {instance_id}] Message: {json.dumps(message)}")
+        # 4. Construct the internal "wake-up" command
+        command_parser = CommandParser(state, node_config)
+        internal_command = command_parser.create_internal_command(
+            command_type="EXECUTE_SCHEDULED_TASK",
+            state_update={}, # The state update is now immediate, not deferred.
+            next_command=next_command_payload
+        )
 
-    # Send the message to the capability queue
-    queue_client.send_message(target_queue_url, message)
+        # 5. Determine the orchestrator's own queue and schedule name
+        orchestrator_queue_arn = os.environ.get("COMMAND_QUEUE_ARN")
+        if not orchestrator_queue_arn:
+            raise ValueError("Orchestrator's own COMMAND_QUEUE_ARN is not configured.")
+
+        workflow_instance_id = state['context']['workflowInstanceId']
+        schedule_name = f"{workflow_instance_id}-{node_name}"
+
+        # 6. Create or update the one-time schedule
+        scheduler_client.create_or_update_onetime_schedule(
+            schedule_name=schedule_name,
+            schedule_time=schedule_time_str,
+            target_arn=orchestrator_queue_arn,
+            payload=internal_command
+        )
+        
+        logger.info(f"Successfully scheduled internal task for node '{node_name}' at {schedule_time_str}.")
+
+    except Exception as e:
+        logger.error(f"Error in 'scheduled_request' node '{node_name}': {e}")
+        state["is_error"] = True
+        state["error_details"] = {"error": str(e), "node": node_name}
     
-    logger.info(f"Sent async request for '{capability_id}'. Workflow will pause and wait for response.")
-    return interrupt("Waiting for async response")
-
-
-def _sync_call_logic(state: Dict[str, Any], node_config: Dict[str, Any]) -> Dict[str, Any]:
-    """The specific logic for handling a 'sync_call' node (placeholder)."""
-    context = state.get("context", {})
-    capability_id = node_config.get('capability_id')
-    logger.info(f"Executing sync call for capability '{capability_id}'")
-
-    # In a real implementation, this would involve a direct call (e.g., HTTP request)
-    # or invoking another internal function.
-    
-    # For the PoC, we will simulate a successful result and update the context.
-    output_keys = node_config.get('output_keys', [])
-    
-    if output_keys:
-        # Create mock output for the keys this node is supposed to produce
-        mock_output_key = output_keys[0]
-        context[mock_output_key] = {
-            "status": "processed",
-            "data": f"mock_data_from_{capability_id}"
-        }
-        logger.info(f"Mocked sync call result: {context}")
-
-    return context
+    return state
 
 
 # --- Factory Functions ---
 
 def create_async_request_action(node_config: Dict[str, Any]):
     """Creates a node action function for an async_request."""
-    return partial(_base_action, node_config=node_config, action_logic_fn=_async_request_logic)
+    return partial(_base_action, node_config=node_config, action_logic_fn=handle_async_request)
 
 
 def create_sync_call_action(node_config: Dict[str, Any]):
     """Creates a node action function for a sync_call."""
-    return partial(_base_action, node_config=node_config, action_logic_fn=_sync_call_logic)
+    return partial(_base_action, node_config=node_config, action_logic_fn=handle_sync_call)

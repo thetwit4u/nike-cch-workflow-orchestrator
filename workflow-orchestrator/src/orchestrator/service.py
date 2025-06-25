@@ -1,38 +1,34 @@
 import logging
 import os
+from typing import Dict, Any
 from clients.queue_client import QueueClient
-from lib.langgraph_checkpoint_dynamodb.langgraph_checkpoint_dynamodb.saver import DynamoDBSaver
-from lib.langgraph_checkpoint_dynamodb.langgraph_checkpoint_dynamodb.config import DynamoDBConfig, DynamoDBTableConfig
-from orchestrator.graph_executor import GraphExecutor
+from lib.langgraph_checkpoint_dynamodb.saver import DynamoDBSaver
+from lib.langgraph_checkpoint_dynamodb.config import DynamoDBConfig, DynamoDBTableConfig
+from orchestrator.graph_builder import GraphBuilder
 from utils.logging_adapter import WorkflowIdAdapter
 from clients.s3_client import S3Client
+from langgraph.graph import CompiledGraph
+from utils.command_parser import CommandParser
 
 logger = logging.getLogger(__name__)
 
 class OrchestratorService:
     """
     The main service for orchestrating workflows.
-    It handles command processing, state management, and interaction with the graph executor.
+    It handles command processing, state management, and graph compilation.
     """
     _instance = None
 
     def __init__(self):
         self.sqs_client = QueueClient()
-        
-        # Initialize the official DynamoDB checkpointer using the configuration
         table_name = os.environ.get("STATE_TABLE_NAME")
         if not table_name:
             raise ValueError("STATE_TABLE_NAME environment variable not set.")
         
-        config = DynamoDBConfig(
-            table_config=DynamoDBTableConfig(
-                table_name=table_name,
-            )
-        )
+        config = DynamoDBConfig(table_config=DynamoDBTableConfig(table_name=table_name))
         self.state_saver = DynamoDBSaver(config)
-
-        # Pass the service instance itself to the executor
-        self.graph_executor = GraphExecutor.get_instance(self)
+        self.s3_client = S3Client()
+        self.compiled_graphs: Dict[str, CompiledGraph] = {}
         logger.info("OrchestratorService initialized.")
 
     @classmethod
@@ -41,121 +37,97 @@ class OrchestratorService:
             cls._instance = cls()
         return cls._instance
 
-    async def process_command(self, command_message: dict):
-        """
-        Processes an incoming command message.
-        """
-        # Get the workflow ID for logging context
+    def _get_or_compile_graph(self, workflow_definition_uri: str) -> CompiledGraph:
+        if workflow_definition_uri not in self.compiled_graphs:
+            logger.info(f"Compiling new graph for definition: {workflow_definition_uri}")
+            definition = self.s3_client.get_workflow_definition(workflow_definition_uri)
+            builder = GraphBuilder(definition, self.state_saver)
+            graph = builder.compile_graph()
+            self.compiled_graphs[workflow_definition_uri] = graph
+        return self.compiled_graphs[workflow_definition_uri]
+
+    def process_command(self, command_message: dict):
         instance_id = command_message.get('workflowInstanceId')
-        
-        # Create a logger adapter with the workflow ID
         adapter = WorkflowIdAdapter(logger, {'workflow_id': instance_id})
         
-        command_type = command_message.get('command', {}).get('type')
+        command = command_message.get('command', {})
+        command_type = command.get('type')
+        workflow_uri = command_message.get('workflowDefinitionURI')
+
         adapter.info(f"Processing command of type: {command_type}")
 
-        if command_type == 'EVENT':
-            self._handle_event_command(command_message, adapter)
-        elif command_type == 'ASYNC_RESP':
-            await self._handle_async_response(command_message, adapter)
-        elif command_type == 'START_WORKFLOW':
-            self._handle_start_workflow(command_message, adapter)
-        elif command_type == 'RESUME_WORKFLOW':
-            await self._handle_resume_workflow(command_message, adapter)
-        else:
-            adapter.warning(f"Unknown command type '{command_type}'. Ignoring.")
-
-    def _handle_event_command(self, message: dict, adapter: logging.LoggerAdapter):
-        """
-        Handles the initial 'EVENT' command that starts a new workflow instance.
-        """
-        adapter.info("Handling EVENT command.")
-        
-        # 1. Extract details from the message
-        workflow_uri = message.get('workflowDefinitionURI')
-        instance_id = message.get('workflowInstanceId')
-        initial_payload = message.get('command', {}).get('payload', {})
-        correlation_id = message.get('correlationId')
-        if correlation_id:
-            initial_payload['correlationId'] = correlation_id
-
-        if not all([workflow_uri, instance_id, initial_payload]):
-            adapter.error("Missing required fields in EVENT command.")
-            return
-
-        # 2. Fetch workflow definition from S3
-        s3_client = S3Client()
-        definition = s3_client.get_workflow_definition(workflow_uri)
-
-        # 3. (Future) Compile and execute the graph
-        self.graph_executor.start_workflow(instance_id, definition, initial_payload, workflow_uri)
-        
-        adapter.info(f"Workflow instance initiated.")
-
-    async def _handle_async_response(self, message: dict, adapter: logging.LoggerAdapter):
-        """
-        Handles an 'ASYNC_RESP' command from a capability.
-        """
-        adapter.info("Handling ASYNC_RESP command.")
-
-        # 1. Extract details
-        instance_id = message.get('workflowInstanceId')
-        command = message.get('command', {})
-        response_payload = command.get('payload', {})
-        # The URI is now required on the response message for stateless resume
-        workflow_definition_uri = message.get('workflowDefinitionURI')
-        
-        if not workflow_definition_uri:
-            adapter.error(f"Cannot resume instance '{instance_id}': 'workflowDefinitionURI' missing from ASYNC_RESP message.")
-            return
-
-        # 2. Resume the graph with the new data
-        self.graph_executor.resume_workflow(instance_id, workflow_definition_uri, response_payload)
-
-        adapter.info(f"Resumed workflow instance with new data.")
-
-    def _handle_start_workflow(self, message: dict, adapter: logging.LoggerAdapter):
-        """
-        Handles the 'START_WORKFLOW' command.
-        """
-        adapter.info("Handling START_WORKFLOW command.")
-        
-        command_type = message.get("command")
-        payload = message.get("payload", {})
-        
-        if command_type == 'START_WORKFLOW':
-            instance_id = payload.get("instance_id")
-            workflow_uri = payload.get("workflow_uri")
-            initial_payload = payload.get("initial_payload", {})
-
-            if not all([instance_id, workflow_uri]):
-                logger.error("Missing 'instance_id' or 'workflow_uri' for START_WORKFLOW")
+        # Bypass validation for internal commands
+        if command_type != 'EXECUTE_SCHEDULED_TASK':
+            if not CommandParser.is_valid_command(command_message):
+                adapter.error("Invalid command structure against generic_command.schema.json.")
                 return
-            
-            # Fetch definition from S3 (assuming S3 client is part of the service now)
-            s3_client = S3Client()
-            definition = s3_client.get_workflow_definition(workflow_uri)
 
-            self.graph_executor.start_workflow(instance_id, definition, initial_payload, workflow_uri)
-
-    async def _handle_resume_workflow(self, message: dict, adapter: logging.LoggerAdapter):
-        """
-        Handles the 'RESUME_WORKFLOW' command.
-        """
-        adapter.info("Handling RESUME_WORKFLOW command.")
-
-        # 1. Extract details
-        instance_id = message.get('workflowInstanceId')
-        command = message.get('command', {})
-        response_payload = command.get('payload', {})
-        # The URI is now required on the response message for stateless resume
-        workflow_definition_uri = message.get('workflowDefinitionURI')
-        
-        if not workflow_definition_uri:
-            adapter.error(f"Cannot resume instance '{instance_id}': 'workflowDefinitionURI' missing from RESUME_WORKFLOW message.")
+        if not all([instance_id, command_type, workflow_uri]):
+            adapter.error("Invalid command: Missing 'workflowInstanceId', 'command.type', or 'workflowDefinitionURI'.")
             return
 
-        # 2. Resume the graph with the new data
-        self.graph_executor.resume_workflow(instance_id, workflow_definition_uri, response_payload)
+        try:
+            graph = self._get_or_compile_graph(workflow_uri)
+            config = {"configurable": {"thread_id": instance_id}}
+            payload = command.get('payload', {})
 
-        adapter.info(f"Resumed workflow instance with new data.")
+            if command_type == 'EVENT':
+                initial_context = {
+                    **payload,
+                    "correlationId": command_message.get("correlationId"),
+                    "workflowInstanceId": instance_id,
+                    "workflow_definition_uri": workflow_uri,
+                }
+                graph.invoke({"context": initial_context, "data": payload}, config)
+                adapter.info("Successfully started workflow.")
+
+            elif command_type == 'ASYNC_RESP':
+                routing_hint = command.get('routingHint')
+                thread_id = instance_id
+
+                if routing_hint:
+                    branch_key = routing_hint.get('branchKey')
+                    parent_state = graph.get_state(config)
+                    checkpoints = parent_state.values.get('branch_checkpoints', {})
+                    child_thread_id = checkpoints.get(branch_key)
+
+                    if child_thread_id:
+                        thread_id = child_thread_id
+                        adapter.info(f"Routing ASYNC_RESP to child thread '{child_thread_id}'.")
+                    else:
+                        adapter.error(f"Could not find registered child thread for branch key '{branch_key}'.")
+                        return
+                
+                resume_config = {"configurable": {"thread_id": thread_id}}
+                graph.update_state(resume_config, {"context": payload, "data": payload})
+                graph.invoke(None, resume_config)
+                adapter.info(f"Successfully resumed workflow on thread '{thread_id}'.")
+
+            elif command_type == 'EXECUTE_SCHEDULED_TASK':
+                state_update = payload.get('state_update', {})
+                next_command = payload.get('next_command', {})
+                
+                if state_update:
+                    graph.update_state(config, {"data": state_update})
+                    adapter.info(f"Updated state with: {state_update} before sending scheduled command.")
+
+                original_context = payload.get('original_context', {})
+                original_data = payload.get('original_data', {})
+                temp_state = {"context": original_context, "data": {**original_data, **state_update}}
+                
+                command_parser = CommandParser(temp_state, next_command)
+                capability_command = command_parser.create_command_message("ASYNC_REQ")
+
+                capability_id = next_command.get("capability_id")
+                queue_name = os.environ.get(f"CCH_CAPABILITY_{capability_id.upper()}_QUEUE_NAME")
+                if not queue_name:
+                    raise ValueError(f"Queue for capability '{capability_id}' is not configured.")
+
+                self.sqs_client.send_message(queue_name, capability_command)
+                adapter.info(f"Successfully sent ASYNC_REQ for capability '{capability_id}' from scheduled task.")
+            
+            else:
+                adapter.warning(f"Unknown command type '{command_type}' cannot be processed.")
+
+        except Exception as e:
+            adapter.error(f"Error processing command for workflow '{instance_id}': {e}", exc_info=True)
