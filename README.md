@@ -32,16 +32,16 @@ graph TD
         H["Capability Lambda(s)"]
     end
 
-    A -- "1. `EVENT` Command" --> B
-    B -- "2. Trigger" --> C
-    C -- "3. Read/Write State" --> D
-    C -- "4. Read Definition" --> E
-    C -- "5. Create/Update Schedule" --> F
-    C -- "6. `ASYNC_REQ` Command" --> G
-    F -- "7. `EXECUTE_SCHEDULED_TASK` (at scheduled time)" --> B
+    A -- "1- EVENT Command" --> B
+    B -- "2- Trigger" --> C
+    C -- "3- Read/Write State" --> D
+    C -- "4- Read Definition" --> E
+    C -- "5- Create/Update Schedule" --> F
+    C -- "6- ASYNC_REQ Command" --> G
+    F -- "7- EXECUTE_SCHEDULED_TASK (at scheduled time)" --> B
     
-    G -- "8. Trigger" --> H
-    H -- "9. `ASYNC_RESP`" --> B
+    G -- "8- Trigger" --> H
+    H -- "9- ASYNC_RESP" --> B
 
 ```
 
