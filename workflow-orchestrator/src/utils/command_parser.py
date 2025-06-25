@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import uuid
 from pathlib import Path
 from jsonschema import validate, ValidationError
 from datetime import datetime, timezone
@@ -8,10 +10,8 @@ logger = logging.getLogger(__name__)
 
 # Load the schema once when the module is imported.
 try:
-    # Assuming schemas are in a directory relative to this file
-    # Adjust the path as needed based on your final project structure.
-    # The path navigates from src/utils -> schemas/generic_command.schema.json
-    schema_path = Path(__file__).parent.parent.parent / "schemas/generic_command.schema.json"
+    # The path navigates from src/utils -> src -> workflow-orchestrator -> cch-workflow-orchestrator -> schemas
+    schema_path = Path(__file__).resolve().parent.parent.parent.parent / "schemas/generic_command.schema.json"
     with open(schema_path) as f:
         GENERIC_COMMAND_SCHEMA = json.load(f)
     logger.info("Successfully loaded generic_command.schema.json")
@@ -24,18 +24,16 @@ except json.JSONDecodeError:
 
 
 class CommandParser:
-    """A utility class for parsing and validating orchestrator commands."""
+    """A utility class for parsing, validating, and creating orchestrator commands."""
+
+    def __init__(self, state, node_config):
+        self.state = state
+        self.node_config = node_config
 
     @staticmethod
-    def parse_and_validate(command_message: dict) -> bool:
+    def is_valid_command(command_message: dict) -> bool:
         """
         Validates a command message against the generic_command.schema.json.
-
-        Args:
-            command_message: The dictionary representation of the command.
-
-        Returns:
-            True if the command is valid, False otherwise.
         """
         if not GENERIC_COMMAND_SCHEMA:
             logger.error("Validation skipped: Generic command schema is not loaded.")
@@ -54,6 +52,31 @@ class CommandParser:
         except Exception:
             logger.exception("An unexpected error occurred during command validation.")
             return False
+
+    def create_command_message(self, command_type: str) -> dict:
+        """
+        Creates a command message to be sent to an external capability.
+        """
+        header = {
+            "workflowInstanceId": self.state["context"].get("workflowInstanceId"),
+            "correlationId": self.state["context"].get("correlationId"),
+            "commandId": str(uuid.uuid4()),
+            "replyToQueueUrl": os.environ.get("REPLY_QUEUE_URL"),
+            "source": "WorkflowOrchestrator",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Add routing hint for parallel branches
+        if self.state["context"].get("branch_key"):
+            header["routingHint"] = {"branchKey": self.state["context"]["branch_key"]}
+
+        body = {
+            "capability_id": self.node_config.get("capability_id"),
+            "context": self._extract_keys(self.node_config.get("input_keys")),
+            "request_output_keys": self.node_config.get("output_keys"),
+        }
+
+        return {"header": header, "body": body}
 
     def create_internal_command(self, command_type: str, state_update: dict, next_command: dict) -> dict:
         """
@@ -84,39 +107,4 @@ class CommandParser:
         """Extracts values from state context and data based on a list of keys."""
         if not key_list:
             return {}
-        return {key: self.state["data"].get(key) for key in key_list if key in self.state["data"]}
-
-    def create_command_message(self, command_type: str, state_update: dict, next_command: dict) -> dict:
-        """
-        Creates a command message for external use by the orchestrator,
-        like the payload for a scheduled task.
-        """
-        workflow_instance_id = self.state["context"].get("workflowInstanceId")
-        correlation_id = self.state["context"].get("correlationId")
-
-        # Based on the command type, we construct the body differently.
-        body = {}
-        if command_type == "ASYNC_REQ":
-            body = {
-                "capability_id": self.node_config.get("capability_id"),
-                "input_context": self._extract_keys(self.node_config.get("input_keys")),
-                "request_output_keys": self.node_config.get("output_keys")
-            }
-        
-        # Add other command type body structures here if needed
-
-        return {
-            "workflowInstanceId": workflow_instance_id,
-            "correlationId": correlation_id,
-            "workflowDefinitionURI": self.state["context"].get("workflow_definition_uri"),
-            "command": {
-                "type": command_type,
-                "payload": {
-                    "state_update": state_update,
-                    "next_command": next_command,
-                    "original_context": self.state["context"],
-                    "original_data": self.state["data"],
-                    "body": body
-                }
-            }
-        } 
+        return {key: self.state["data"].get(key) for key in key_list if key in self.state["data"]} 
