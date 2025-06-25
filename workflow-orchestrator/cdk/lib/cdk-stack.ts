@@ -39,14 +39,18 @@ export class CchWorkflowOrchestratorStack extends Stack {
         // Parse URL like https://sqs.eu-west-1.amazonaws.com/123456789012/queue-name
         const match = sqsUrl.match(/https:\/\/sqs\.([-a-z0-9]+)\.amazonaws\.com\/([0-9]+)\/(.+)/);
         if (match) {
-          return {
+          const details = {
             region: match[1],
             accountId: match[2],
             queueName: match[3]
           };
+          console.log(`Successfully parsed SQS URL: ${sqsUrl}`);
+          console.log(`  Region: ${details.region}, Account: ${details.accountId}, Queue: ${details.queueName}`);
+          return details;
         }
+        console.log(`Failed to match SQS URL pattern: ${sqsUrl}`);
       } catch (e) {
-        console.log(`Failed to parse SQS URL: ${sqsUrl}`);
+        console.log(`Error parsing SQS URL: ${sqsUrl}`, e);
       }
       return undefined;
     };
@@ -83,94 +87,136 @@ export class CchWorkflowOrchestratorStack extends Stack {
     // Grant access to external services listed in AUTHORIZED_COMMAND_QUEUE_SENDERS
     if (authorizedServicesList) {
       // Split the comma-separated list
-      const authorizedServices = authorizedServicesList.split(',').map(s => s.trim());
+      const authorizedServices = authorizedServicesList.split(',').map(s => s.trim()).filter(s => s);
       
       if (authorizedServices.length > 0) {
         console.log(`Granting SendMessage permission to ${authorizedServices.length} external services`);
         
         // Add permissions for each service
         authorizedServices.forEach((service, index) => {
-          let principal: iam.IPrincipal;
+          console.log(`Processing authorization for service: ${service}`);
           
-          // Handle different formats of service identifiers
-          if (service.startsWith('arn:')) {
-            // Full ARN provided
-            if (service.includes(':role/')) {
-              // IAM Role ARN
-              principal = new iam.ArnPrincipal(service);
-            } else if (service.includes(':function:')) {
-              // Lambda function ARN
-              principal = new iam.ServicePrincipal('lambda.amazonaws.com');
-              // Also grant to the Lambda's execution role
-              commandQueue.addToResourcePolicy(
-                new iam.PolicyStatement({
-                  effect: iam.Effect.ALLOW,
-                  principals: [new iam.ServicePrincipal('lambda.amazonaws.com')],
-                  actions: ['sqs:SendMessage'],
-                  resources: [commandQueue.queueArn],
-                  conditions: {
-                    'ArnEquals': {
-                      'aws:SourceArn': service
+          try {
+            // Handle different formats of service identifiers
+            if (service.startsWith('arn:')) {
+              // Full ARN provided
+              if (service.includes(':role/')) {
+                // IAM Role ARN
+                console.log(`Adding policy for IAM Role: ${service}`);
+                
+                const roleArn = new iam.ArnPrincipal(service);
+                commandQueue.grantSendMessages(roleArn);
+                
+                // Output the granted permission for logging
+                new cdk.CfnOutput(this, `ExternalAccessGrant${index}`, {
+                  value: `Granted sqs:SendMessage to IAM Role: ${service}`,
+                  description: 'External IAM Role with access to command queue'
+                });
+              } else if (service.includes(':function:')) {
+                // Lambda function ARN
+                console.log(`Adding policy for Lambda function: ${service}`);
+                
+                // Use proper Lambda function invocation permission pattern
+                commandQueue.addToResourcePolicy(
+                  new iam.PolicyStatement({
+                    effect: iam.Effect.ALLOW,
+                    principals: [new iam.ServicePrincipal('lambda.amazonaws.com')],
+                    actions: ['sqs:SendMessage'],
+                    resources: [commandQueue.queueArn],
+                    conditions: {
+                      'ArnEquals': {
+                        'aws:SourceArn': service
+                      }
                     }
-                  }
-                })
-              );
-              return; // Skip the common policy statement at the end
-            } else {
-              // Other ARN type - treat as generic principal
-              principal = new iam.ArnPrincipal(service);
-            }
-          } else if (service.includes(':')) {
-            // Shorthand format like 'lambda:function:name' or 'account:role/name'
-            const [serviceType, ...rest] = service.split(':');
-            if (serviceType === 'lambda') {
-              principal = new iam.ServicePrincipal('lambda.amazonaws.com');
-              // Will need to determine the actual Lambda ARN
-              const lambdaName = rest.join(':');
-              const accountId = process.env.CDK_DEFAULT_ACCOUNT || this.account;
-              const region = this.region;
+                  })
+                );
+                
+                // Output the granted permission for logging
+                new cdk.CfnOutput(this, `ExternalAccessGrant${index}`, {
+                  value: `Granted sqs:SendMessage to Lambda: ${service}`,
+                  description: 'External Lambda with access to command queue'
+                });
+              } else {
+                // Other ARN type - treat as generic principal
+                console.log(`Adding policy for generic ARN: ${service}`);
+                
+                const arnPrincipal = new iam.ArnPrincipal(service);
+                commandQueue.grantSendMessages(arnPrincipal);
+                
+                // Output the granted permission for logging
+                new cdk.CfnOutput(this, `ExternalAccessGrant${index}`, {
+                  value: `Granted sqs:SendMessage to ARN: ${service}`,
+                  description: 'External service with access to command queue'
+                });
+              }
+            } else if (service.includes(':')) {
+              // Shorthand format like 'lambda:function:name' or 'account:role/name'
+              const [serviceType, ...rest] = service.split(':');
               
-              // Add a condition to only allow the specified Lambda
-              commandQueue.addToResourcePolicy(
-                new iam.PolicyStatement({
-                  effect: iam.Effect.ALLOW,
-                  principals: [principal],
-                  actions: ['sqs:SendMessage'],
-                  resources: [commandQueue.queueArn],
-                  conditions: {
-                    'ArnEquals': {
-                      'aws:SourceArn': `arn:aws:lambda:${region}:${accountId}:${lambdaName}`
+              if (serviceType === 'lambda') {
+                // Lambda function shorthand
+                const lambdaName = rest.join(':');
+                const accountId = process.env.CDK_DEFAULT_ACCOUNT || this.account;
+                const region = this.region;
+                const lambdaArn = `arn:aws:lambda:${region}:${accountId}:function:${lambdaName}`;
+                
+                console.log(`Adding policy for Lambda shorthand: ${service} => ${lambdaArn}`);
+                
+                // Add a condition to only allow the specified Lambda
+                commandQueue.addToResourcePolicy(
+                  new iam.PolicyStatement({
+                    effect: iam.Effect.ALLOW,
+                    principals: [new iam.ServicePrincipal('lambda.amazonaws.com')],
+                    actions: ['sqs:SendMessage'],
+                    resources: [commandQueue.queueArn],
+                    conditions: {
+                      'ArnEquals': {
+                        'aws:SourceArn': lambdaArn
+                      }
                     }
-                  }
-                })
-              );
-              return; // Skip the common policy statement at the end
+                  })
+                );
+                
+                // Output the granted permission for logging
+                new cdk.CfnOutput(this, `ExternalAccessGrant${index}`, {
+                  value: `Granted sqs:SendMessage to Lambda: ${lambdaArn}`,
+                  description: 'External Lambda with access to command queue'
+                });
+              } else {
+                // Assume it's an account:role format
+                const [accountId, ...roleNameParts] = rest;
+                const rolePath = roleNameParts.join(':');
+                const roleArn = `arn:aws:iam::${accountId}:${rolePath}`;
+                
+                console.log(`Adding policy for account:role shorthand: ${service} => ${roleArn}`);
+                
+                const arnPrincipal = new iam.ArnPrincipal(roleArn);
+                commandQueue.grantSendMessages(arnPrincipal);
+                
+                // Output the granted permission for logging
+                new cdk.CfnOutput(this, `ExternalAccessGrant${index}`, {
+                  value: `Granted sqs:SendMessage to Role: ${roleArn}`,
+                  description: 'External Role with access to command queue'
+                });
+              }
             } else {
-              // Assume it's an account:role format
-              const [accountId, ...roleNameParts] = rest;
-              const roleName = roleNameParts.join(':');
-              principal = new iam.ArnPrincipal(`arn:aws:iam::${accountId}:${roleName}`);
+              // Simple name - assume it's a user in the current account
+              const userArn = `arn:aws:iam::${this.account}:user/${service}`;
+              
+              console.log(`Adding policy for user shorthand: ${service} => ${userArn}`);
+              
+              const userPrincipal = new iam.ArnPrincipal(userArn);
+              commandQueue.grantSendMessages(userPrincipal);
+              
+              // Output the granted permission for logging
+              new cdk.CfnOutput(this, `ExternalAccessGrant${index}`, {
+                value: `Granted sqs:SendMessage to User: ${userArn}`,
+                description: 'External User with access to command queue'
+              });
             }
-          } else {
-            // Simple name - assume it's a user
-            principal = new iam.ArnPrincipal(`arn:aws:iam::${this.account}:user/${service}`);
+          } catch (error) {
+            console.log(`Error processing authorization for service: ${service}`, error);
           }
-          
-          // Add the policy statement to the queue
-          commandQueue.addToResourcePolicy(
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              principals: [principal],
-              actions: ['sqs:SendMessage'],
-              resources: [commandQueue.queueArn]
-            })
-          );
-          
-          // Output the granted permission for logging
-          new cdk.CfnOutput(this, `ExternalAccessGrant${index}`, {
-            value: `Granted sqs:SendMessage to ${service}`,
-            description: 'External service with access to command queue'
-          });
         });
       }
     }
@@ -180,35 +226,51 @@ export class CchWorkflowOrchestratorStack extends Stack {
       console.log(`Granting command queue access to ${capabilityQueueUrls.length} capability services`);
       
       capabilityQueueUrls.forEach((queueUrl, index) => {
-        const sqsDetails = extractSqsDetails(queueUrl);
-        
-        if (sqsDetails) {
-          const { accountId, region, queueName } = sqsDetails;
+        try {
+          const sqsDetails = extractSqsDetails(queueUrl);
           
-          // Create an ARN for the queue's execution role
-          // SQS queues are typically accessed by Lambda functions, so we grant access to the Lambda service
-          const capabilityServiceArn = `arn:aws:lambda:${region}:${accountId}:function:*`;
-          
-          // Add resource policy to allow the capability service to send messages to the command queue
-          commandQueue.addToResourcePolicy(
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              principals: [new iam.ServicePrincipal('lambda.amazonaws.com')],
-              actions: ['sqs:SendMessage'],
-              resources: [commandQueue.queueArn],
-              conditions: {
-                'ArnLike': {
-                  'aws:SourceArn': capabilityServiceArn
+          if (sqsDetails) {
+            const { accountId, region, queueName } = sqsDetails;
+            
+            // Instead of using a wildcard, grant permissions to a more specific function pattern
+            // Based on the queue name (assuming queue name is related to the function name)
+            // Format: arn:aws:lambda:region:account:function:prefix-*
+            const queueNameParts = queueName.split('-');
+            const capabilityPrefix = queueNameParts[0]; // Usually 'cch'
+            const capabilityName = queueNameParts.length > 1 ? queueNameParts[1] : '*'; // 'capability' or specific name
+            
+            // Create more specific function name pattern based on queue name
+            const capabilityServiceArn = `arn:aws:lambda:${region}:${accountId}:function:${capabilityPrefix}-${capabilityName}-*`;
+            
+            console.log(`Adding policy for capability Lambda pattern: ${capabilityServiceArn}`);
+            
+            // Instead of using addToResourcePolicy, use the higher-level grantSendMessages method with conditions
+            // This ensures proper policy syntax
+            commandQueue.addToResourcePolicy(
+              new iam.PolicyStatement({
+                sid: `AllowCapabilityLambda${index}`, // Adding a unique SID helps avoid policy conflicts
+                effect: iam.Effect.ALLOW,
+                principals: [new iam.ServicePrincipal('lambda.amazonaws.com')],
+                actions: ['sqs:SendMessage'],
+                resources: [commandQueue.queueArn],
+                conditions: {
+                  'ArnLike': {
+                    'aws:SourceArn': capabilityServiceArn
+                  }
                 }
-              }
-            })
-          );
-          
-          // Output for visibility
-          new cdk.CfnOutput(this, `CapabilityAccessGrant${index}`, {
-            value: `Granted sqs:SendMessage from account ${accountId} Lambda functions to command queue`,
-            description: 'Capability service with access to command queue'
-          });
+              })
+            );
+            
+            // Output for visibility
+            new cdk.CfnOutput(this, `CapabilityAccessGrant${index}`, {
+              value: `Granted sqs:SendMessage from Lambda functions matching ${capabilityServiceArn} to command queue`,
+              description: 'Capability service with access to command queue'
+            });
+          } else {
+            console.warn(`Skipping invalid SQS URL: ${queueUrl}`);
+          }
+        } catch (error) {
+          console.error(`Error processing capability queue URL: ${queueUrl}`, error);
         }
       });
     }
@@ -377,12 +439,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
       retention: logs.RetentionDays.ONE_DAY,
     });
 
-    // Grant send message access to authorized external services
-    if (authorizedServicesList) {
-      const authorizedServices = authorizedServicesList.split(',');
-      for (const serviceArn of authorizedServices) {
-        commandQueue.grantSendMessages(new iam.ServicePrincipal(serviceArn));
-      }
-    }
+    // The permissions for authorized external services are already handled above
+    // No need for additional grants here
   }
 }

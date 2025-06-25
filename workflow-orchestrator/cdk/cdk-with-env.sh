@@ -8,8 +8,16 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-# Load environment variables from .env file
+# Load and export environment variables from .env file
+set -a  # Automatically export all variables
 source .env
+set +a  # Turn off auto-export
+
+# Debug output
+echo "Loaded environment variables from .env:"
+echo "CCH_OWNER=${CCH_OWNER}"
+echo "CDK_ENV=${CDK_ENV}"
 
 # Run the CDK command with all arguments passed to this script
-npx cdk "$@"
+# Use env to explicitly pass environment variables to the Node.js process
+env npx cdk "$@"

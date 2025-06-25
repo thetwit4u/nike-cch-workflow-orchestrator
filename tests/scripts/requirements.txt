@@ -1,4 +1,0 @@
-colorama
-pygments 
-# Required for interacting with AWS services (S3, SQS)
-boto3
