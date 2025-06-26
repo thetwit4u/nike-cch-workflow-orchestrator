@@ -1,0 +1,8 @@
+{
+  "CchWorkflowOrchestratorStack-dev": {
+    "CheckpointTableName": "cch-flow-orchestrator-workflow-state-table-dev-userid",
+    "IngestBucketName": "cch-flow-orchestrator-eventdata-bucket-dev-userid",
+    "MockCapabilityQueueUrl": "https://sqs.us-east-1.amazonaws.com/679172460410/cch-flow-orchestrator-mock-capability-queue-dev-userid",
+    "CommandQueueUrl": "https://sqs.us-east-1.amazonaws.com/679172460410/cch-flow-orchestrator-command-queue-dev-userid"
+  }
+}

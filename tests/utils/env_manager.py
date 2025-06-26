@@ -82,6 +82,9 @@ class TestEnvironmentManager:
             "never",
             "--outputs-file",
             str(self.output_file),
+            # Add test context to ensure test-only resources are created
+            "-c",
+            "test=true",
         ]
         self._run_command(command)
         logger.info(f"CDK stack deployed. Outputs saved to {self.output_file}")

@@ -2,7 +2,7 @@ from pytest_bdd import scenario, given, when, then, parsers
 import logging
 
 # Make fixtures available in this module
-from .environment import *
+from tests.steps.environment import *
 
 logger = logging.getLogger(__name__)
 

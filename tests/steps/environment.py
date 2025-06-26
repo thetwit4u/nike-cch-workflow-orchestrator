@@ -5,7 +5,7 @@ import logging
 from tests.utils.env_manager import TestEnvironmentManager
 from tests.utils.cdk_outputs_parser import CdkOutputsParser
 from tests.utils.mock_service_client import MockServiceClient
-from tests.utils.test_data_loader import TestDataLoader
+from tests.utils.data_loader import DataLoader
 from tests.utils.aws_client import AWSClient
 from tests.utils.workflow_verifier import WorkflowVerifier
 
@@ -60,7 +60,7 @@ def workflow_verifier(aws_client, cdk_outputs, stack_name):
 @pytest.fixture(scope="function")
 def test_data_loader():
     """Provides a utility to load test data files."""
-    return TestDataLoader()
+    return DataLoader()
 
 @pytest.fixture(scope="function")
 def scenario_context():

@@ -4,7 +4,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class TestDataLoader:
+class DataLoader:
     """
     Loads test data from JSON files for BDD scenarios.
     """
@@ -59,4 +59,4 @@ class TestDataLoader:
         file_path = self.data_dir / filename
         if not file_path.exists():
             raise FileNotFoundError(f"Test data file not found: {file_path}")
-        return str(file_path) 
+        return str(file_path)

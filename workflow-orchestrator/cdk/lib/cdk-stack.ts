@@ -452,6 +452,8 @@ export class CchWorkflowOrchestratorStack extends Stack {
 
     // --- TEST-ONLY RESOURCES ---
     // The following resources are only created when deploying for testing.
+    // For BDD tests to work, the stack must be deployed with: cdk deploy -c test=true
+    // This creates the mock services and API endpoints needed by the tests.
     if (props?.isTest) {
       
       // 1. Create a DynamoDB table to store mock configurations for tests.
