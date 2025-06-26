@@ -10,6 +10,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from clients.queue_client import QueueClient
+from clients.http_client import HttpClient
 from utils.command_parser import CommandParser
 from clients.scheduler_client import SchedulerClient
 import dateutil.parser
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 # Initialize clients and config loader
 queue_client = QueueClient()
+http_client = HttpClient()
 scheduler_client = boto3.client('scheduler')
 iam_client = boto3.client('iam')
 
@@ -85,15 +87,31 @@ def handle_async_request(state: WorkflowState, node_config: dict, node_name: str
         command_payload = command_parser.create_command_message(command_type="ASYNC_REQ")
 
         capability_id = node_config.get("capability_id")
-        queue_name = os.environ.get(f"CCH_CAPABILITY_{capability_id.upper()}_QUEUE_NAME")
-        if not queue_name:
-            raise ValueError(f"Queue for capability '{capability_id}' is not configured in environment variables.")
+        if not capability_id or '#' not in capability_id:
+            raise ValueError(f"Invalid capability_id format: '{capability_id}'. Expected 'service#action'.")
 
-        queue_client = QueueClient()
-        queue_client.send_message(
-            queue_name=queue_name,
-            message_body=command_payload
-        )
+        capability_service = capability_id.split('#')[0].upper()
+        
+        # Check for a test-specific HTTP endpoint first.
+        test_endpoint_var = f"CCH_MOCK_HTTP_ENDPOINT_{capability_service}"
+        http_endpoint = os.environ.get(test_endpoint_var)
+
+        if http_endpoint:
+            logger.info(f"Using mock HTTP endpoint for capability '{capability_id}' from env var '{test_endpoint_var}'.")
+            http_client.post(http_endpoint, command_payload)
+        else:
+            # Fallback to the production SQS queue configuration.
+            prod_queue_var = f"CCH_CAPABILITY_{capability_service}"
+            sqs_queue = os.environ.get(prod_queue_var)
+            if not sqs_queue:
+                raise ValueError(f"Endpoint for capability service '{capability_service}' is not configured. Checked for '{test_endpoint_var}' and '{prod_queue_var}'.")
+            
+            logger.info(f"Sending ASYNC_REQ to SQS queue for capability '{capability_id}'.")
+            queue_client.send_message(
+                queue_name=sqs_queue,
+                message_body=command_payload
+            )
+
         logger.info(f"Successfully sent async request for capability '{capability_id}'. Pausing for response.")
         
         # We must interrupt execution here to wait for the async response

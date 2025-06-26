@@ -1,121 +1,148 @@
 import json
 import os
-import boto3
 import logging
-import sys
-from datetime import datetime
 import uuid
+from datetime import datetime
+from flask import Flask, request, jsonify
+from mangum import Mangum
+import boto3
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
-    stream=sys.stdout
-)
+# --- Logging ---
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
+# --- AWS Clients ---
 sqs_client = boto3.client('sqs')
+dynamodb = boto3.resource('dynamodb')
 
+# --- Environment Variables ---
+MOCK_CONFIG_TABLE_NAME = os.environ.get('MOCK_CONFIG_TABLE_NAME')
+ORCHESTRATOR_COMMAND_QUEUE_URL = os.environ.get('ORCHESTRATOR_COMMAND_QUEUE_URL')
+
+# Initialize table resource only if the table name is provided
+mock_config_table = None
+if MOCK_CONFIG_TABLE_NAME:
+    mock_config_table = dynamodb.Table(MOCK_CONFIG_TABLE_NAME)
+
+# --- Flask App for HTTP Control Plane---
+app = Flask(__name__)
+
+@app.route('/control/configure', methods=['POST'])
+def configure_mock():
+    if not mock_config_table:
+        return jsonify({"error": "Mock config table not initialized"}), 500
+    try:
+        data = request.json
+        capability_id = data.get('capability')
+        if not capability_id:
+            return jsonify({"error": "'capability' field is required"}), 400
+        
+        config = {
+            "capability_id": capability_id,
+            "response_type": data.get("response_type", "SUCCESS"),
+            "response_data": data.get("response_data", {})
+        }
+        mock_config_table.put_item(Item=config)
+        
+        msg = f"Successfully configured mock for capability: {capability_id}"
+        logger.info(msg)
+        return jsonify({"message": msg, "configuration": config})
+    except Exception as e:
+        logger.error(f"Error in /control/configure: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/control/reset', methods=['POST'])
+def reset_mocks():
+    # Note: A full table scan and batch delete is expensive. For testing, it's ok.
+    # A better approach for high-volume use would be to have a per-test-run partition key.
+    if not mock_config_table:
+        return jsonify({"error": "Mock config table not initialized"}), 500
+    try:
+        scan = mock_config_table.scan()
+        with mock_config_table.batch_writer() as batch:
+            for each in scan['Items']:
+                batch.delete_item(Key={'capability_id': each['capability_id']})
+        msg = "All mock configurations have been reset."
+        logger.info(msg)
+        return jsonify({"message": msg})
+    except Exception as e:
+        logger.error(f"Error in /control/reset: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+# --- Mangum Handler for Flask ---
+mangum_handler = Mangum(app)
+
+# --- Main Lambda Handler ---
 def handler(event, context):
     """
-    Handles SQS events from capability request queues, simulates processing,
-    and sends a response back to the orchestrator's reply queue.
+    Main Lambda handler that routes events based on their source.
+    - API Gateway events are routed to the Flask app (via Mangum).
+    - SQS events are processed to simulate capability responses.
     """
-    logger.info(f"Received event: {json.dumps(event)}")
+    if 'requestContext' in event and 'http' in event['requestContext']:
+        # It's an HTTP event from API Gateway
+        logger.info("Routing event to HTTP handler (Mangum/Flask)")
+        return mangum_handler(event, context)
+    
+    if 'Records' in event and event['Records'][0]['eventSource'] == 'aws:sqs':
+        # It's an SQS event
+        logger.info("Routing event to SQS handler")
+        return handle_sqs_event(event, context)
 
+    logger.warning(f"Unknown event type received: {event}")
+    return {"statusCode": 400, "body": "Unknown event type"}
+
+# --- SQS Event Processing Logic ---
+def handle_sqs_event(event, context):
+    """
+    Processes SQS messages from the orchestrator.
+    """
+    if not ORCHESTRATOR_COMMAND_QUEUE_URL or not mock_config_table:
+        logger.error("Required environment variables for SQS handling are not set.")
+        return
+        
     for record in event['Records']:
         try:
             message_body = json.loads(record['body'])
-            header = message_body.get('header', {})
+            command = message_body.get('command', {})
+            payload = command.get('payload', {})
+            capability_id = payload.get('capability_id')
             
-            reply_to_queue_url = header.get('replyToQueueUrl')
-            correlation_id = header.get('correlationId') # This is the workflowInstanceId
-            # The capability must receive and return the definition URI to enable stateless resume
-            workflow_definition_uri = header.get('workflowDefinitionURI')
-            
-            capability_id = message_body.get('body', {}).get('capability_id', 'unknown_capability')
-            
-            # Get the workflowInstanceId from the original request context to pass it back
-            workflow_instance_id = message_body.get('body', {}).get('context', {}).get('workflowInstanceId')
-            # Get the workflow_id from the original request context to pass it back
-            workflow_id = message_body.get('body', {}).get('context', {}).get('workflow_id')
-
-            if not all([reply_to_queue_url, correlation_id, workflow_id, workflow_definition_uri, workflow_instance_id]):
-                logger.error("Missing 'replyToQueueUrl', 'correlationId', 'workflow_id', 'workflowDefinitionURI', or 'workflowInstanceId' in the message.")
+            if not capability_id:
+                logger.error("Missing 'capability_id' in SQS message payload.")
                 continue
 
-            logger.info(f"Processing request for capability '{capability_id}' with correlationId '{correlation_id}' and workflowInstanceId '{workflow_instance_id}'")
+            logger.info(f"Processing SQS request for capability '{capability_id}'")
 
-            # --- Mock Logic ---
-            # Simulate a successful response based on the capability ID
-            response_payload = {}
-            context = message_body.get('body', {}).get('context', {})
-            # Only use asnUri from the context
-            asn_uri = context.get('asnUri')
-            logger.info(f"asnUri for enrichment: {asn_uri}")
-            delivery_sample_uri = None
-            if asn_uri and asn_uri.startswith('s3://'):
-                import os
-                bucket_and_path = asn_uri[5:]
-                bucket, *path_parts = bucket_and_path.split('/')
-                if path_parts:
-                    path_parts[-1] = 'delivery-sample.json'
-                    delivery_sample_uri = f"s3://{bucket}/{'/'.join(path_parts)}"
-                else:
-                    delivery_sample_uri = f"s3://{bucket}/delivery-sample.json"
-            logger.info(f"Derived delivery_sample_uri: {delivery_sample_uri}")
-            if 'import' in capability_id:
-                response_payload = {
-                    # Required output key for workflow compatibility
-                    "import_enrichment_uri": delivery_sample_uri or "mock-import-uri-value",
-                    "us_import_requirements": {
-                        "hs_codes_verified": True,
-                        "valuation_method": "Method 1",
-                        "required_documents": ["C88", "EORI_Auth"]
-                    }
-                }
-            elif 'export' in capability_id:
-                response_payload = {
-                    "be_export_requirements": {
-                        "export_license_needed": False,
-                        "eori_number": "BE123456789"
-                    }
-                }
+            # Get mock configuration from DynamoDB
+            response_config = mock_config_table.get_item(Key={'capability_id': capability_id}).get('Item')
+            
+            if not response_config:
+                response_payload = {"error": "No mock configured for this capability"}
             else:
-                 response_payload = {"status": "completed", "mock_data": "some_default_data"}
+                response_payload = response_config.get("response_data", {})
 
-
-            # --- Construct Generic Command Response ---
-            request_id = getattr(context, 'aws_request_id', None)
-            # Generate a UUID for the command id if not present
-            command_id = f"resp-cmd-mock-{request_id}" if request_id else str(uuid.uuid4())
+            # Construct the response command to send back to the orchestrator
             response_message = {
-                "workflowInstanceId": workflow_instance_id,
-                "correlationId": header.get("correlationId"),
-                "workflowDefinitionURI": workflow_definition_uri,
+                "workflowInstanceId": message_body.get("workflowInstanceId"),
+                "correlationId": message_body.get("correlationId"),
+                "workflowDefinitionURI": message_body.get("workflowDefinitionURI"),
                 "command": {
                     "type": "ASYNC_RESP",
-                    "id": command_id,
+                    "id": f"resp-cmd-mock-{uuid.uuid4()}",
                     "source": f"Capability:{capability_id}",
                     "timestamp": datetime.utcnow().isoformat() + "Z",
                     "payload": response_payload
                 }
             }
 
-            logger.info(f"Sending response to '{reply_to_queue_url}': {json.dumps(response_message)}")
-
-            # Send the response back to the reply queue
+            logger.info(f"Sending response to '{ORCHESTRATOR_COMMAND_QUEUE_URL}': {json.dumps(response_message)}")
             sqs_client.send_message(
-                QueueUrl=reply_to_queue_url,
+                QueueUrl=ORCHESTRATOR_COMMAND_QUEUE_URL,
                 MessageBody=json.dumps(response_message)
             )
 
         except Exception as e:
-            logger.error(f"Error processing record: {e}")
-            # In a real scenario, you might send to a DLQ or handle retries
+            logger.error(f"Error processing SQS record: {e}", exc_info=True)
             continue
-            
-    return {
-        'statusCode': 200,
-        'body': json.dumps('Successfully processed records.')
-    }
+    return {"statusCode": 200, "body": "SQS records processed."}

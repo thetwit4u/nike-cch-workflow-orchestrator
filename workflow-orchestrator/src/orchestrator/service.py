@@ -2,6 +2,7 @@ import logging
 import os
 from typing import Dict, Any
 from clients.queue_client import QueueClient
+from clients.http_client import HttpClient
 from lib.langgraph_checkpoint_dynamodb.saver import DynamoDBSaver
 from lib.langgraph_checkpoint_dynamodb.config import DynamoDBConfig, DynamoDBTableConfig
 from orchestrator.graph_builder import GraphBuilder
@@ -21,6 +22,7 @@ class OrchestratorService:
 
     def __init__(self):
         self.sqs_client = QueueClient()
+        self.http_client = HttpClient()
         table_name = os.environ.get("STATE_TABLE_NAME")
         if not table_name:
             raise ValueError("STATE_TABLE_NAME environment variable not set.")
@@ -96,8 +98,8 @@ class OrchestratorService:
                         adapter.info(f"Routing ASYNC_RESP to child thread '{child_thread_id}'.")
                     else:
                         adapter.error(f"Could not find registered child thread for branch key '{branch_key}'.")
-                        return
-                
+            return
+
                 resume_config = {"configurable": {"thread_id": thread_id}}
                 graph.update_state(resume_config, {"context": payload, "data": payload})
                 graph.invoke(None, resume_config)
@@ -106,7 +108,7 @@ class OrchestratorService:
             elif command_type == 'EXECUTE_SCHEDULED_TASK':
                 state_update = payload.get('state_update', {})
                 next_command = payload.get('next_command', {})
-                
+
                 if state_update:
                     graph.update_state(config, {"data": state_update})
                     adapter.info(f"Updated state with: {state_update} before sending scheduled command.")
@@ -119,11 +121,28 @@ class OrchestratorService:
                 capability_command = command_parser.create_command_message("ASYNC_REQ")
 
                 capability_id = next_command.get("capability_id")
-                queue_name = os.environ.get(f"CCH_CAPABILITY_{capability_id.upper()}_QUEUE_NAME")
-                if not queue_name:
-                    raise ValueError(f"Queue for capability '{capability_id}' is not configured.")
+                if not capability_id or '#' not in capability_id:
+                    raise ValueError(f"Invalid capability_id format: '{capability_id}'. Expected 'service#action'.")
 
-                self.sqs_client.send_message(queue_name, capability_command)
+                capability_service = capability_id.split('#')[0].upper()
+                
+                # Check for a test-specific HTTP endpoint first.
+                test_endpoint_var = f"CCH_MOCK_HTTP_ENDPOINT_{capability_service}"
+                http_endpoint = os.environ.get(test_endpoint_var)
+
+                if http_endpoint:
+                    logger.info(f"Sending ASYNC_REQ to HTTP endpoint for capability '{capability_id}' from scheduled task.")
+                    self.http_client.post(http_endpoint, capability_command)
+                else:
+                    # Fallback to the production SQS queue configuration.
+                    prod_queue_var = f"CCH_CAPABILITY_{capability_service}"
+                    sqs_queue = os.environ.get(prod_queue_var)
+                    if not sqs_queue:
+                        raise ValueError(f"Endpoint for capability service '{capability_service}' is not configured. Checked for '{test_endpoint_var}' and '{prod_queue_var}'.")
+
+                    logger.info(f"Sending ASYNC_REQ to SQS queue for capability '{capability_id}' from scheduled task.")
+                    self.sqs_client.send_message(sqs_queue, capability_command)
+
                 adapter.info(f"Successfully sent ASYNC_REQ for capability '{capability_id}' from scheduled task.")
             
             else:

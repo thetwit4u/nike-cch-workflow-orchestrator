@@ -1,12 +1,16 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { aws_sqs as sqs, aws_dynamodb as dynamodb, aws_s3 as s3, aws_lambda as lambda, aws_logs as logs, Duration, Stack, StackProps, Tags, aws_iam as iam } from 'aws-cdk-lib';
+import { aws_sqs as sqs, aws_dynamodb as dynamodb, aws_s3 as s3, aws_lambda as lambda, aws_logs as logs, Duration, Stack, StackProps, Tags, aws_iam as iam, aws_apigateway as apigateway } from 'aws-cdk-lib';
 import * as python from '@aws-cdk/aws-lambda-python-alpha';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as path from 'path';
 
+interface CchWorkflowOrchestratorStackProps extends StackProps {
+  isTest?: boolean;
+}
+
 export class CchWorkflowOrchestratorStack extends Stack {
-  constructor(scope: Construct, id: string, props?: StackProps) {
+  constructor(scope: Construct, id: string, props?: CchWorkflowOrchestratorStackProps) {
     super(scope, id, props);
 
     // Dynamic values from context or environment
@@ -302,7 +306,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
 
     schedulerRole.addToPolicy(new iam.PolicyStatement({
       actions: ['sqs:SendMessage'],
-      resources: [],
+      resources: [commandQueue.queueArn],
     }));
 
     // DynamoDB Table for State Persistence
@@ -427,5 +431,88 @@ export class CchWorkflowOrchestratorStack extends Stack {
 
     // The permissions for authorized external services are already handled above
     // No need for additional grants here
+
+    // --- STACK OUTPUTS ---
+    // These are useful for connecting other services or for test automation
+
+    new cdk.CfnOutput(this, 'CheckpointTableName', {
+      value: stateTable.tableName,
+      description: 'Name of the DynamoDB table for workflow state',
+    });
+
+    new cdk.CfnOutput(this, 'IngestBucketName', {
+      value: eventdataBucket.bucketName,
+      description: 'Name of the S3 bucket for event data ingest',
+    });
+
+    new cdk.CfnOutput(this, 'CommandQueueUrl', {
+      value: commandQueue.queueUrl,
+      description: 'URL of the main orchestrator command SQS queue',
+    });
+
+    // --- TEST-ONLY RESOURCES ---
+    // The following resources are only created when deploying for testing.
+    if (props?.isTest) {
+      
+      // 1. Create a DynamoDB table to store mock configurations for tests.
+      const mockConfigTable = new dynamodb.Table(this, 'MockConfigTable', {
+        tableName: `${mainPrefix}-mock-config-table-${env}${ownerSuffix}`,
+        partitionKey: { name: 'capability_id', type: dynamodb.AttributeType.STRING },
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+        removalPolicy: cdk.RemovalPolicy.DESTROY, // Automatically delete table on stack destroy
+      });
+
+      // 2. Create a single SQS queue to receive all capability calls during tests.
+      const mockCapabilityQueue = new sqs.Queue(this, 'MockCapabilityTestQueue', {
+        queueName: `${mainPrefix}-mock-capability-test-queue-${env}${ownerSuffix}`,
+        visibilityTimeout: Duration.seconds(300),
+      });
+
+      // 3. Create the Mock Service Lambda.
+      const mockServiceLambda = new python.PythonFunction(this, 'MockCapabilityServiceLambda', {
+        functionName: `${mainPrefix}-mock-service-${env}${ownerSuffix}`,
+        entry: path.join(__dirname, '../../capability-mock-service'),
+        runtime: lambda.Runtime.PYTHON_3_11,
+        index: 'app.py',
+        handler: 'handler',
+        timeout: Duration.seconds(30),
+        logRetention: logs.RetentionDays.ONE_WEEK,
+        environment: {
+          LOG_LEVEL: 'INFO',
+          MOCK_CONFIG_TABLE_NAME: mockConfigTable.tableName,
+          ORCHESTRATOR_COMMAND_QUEUE_URL: commandQueue.queueUrl, // Give mock access to the reply queue
+        },
+      });
+
+      // 4. Set the mock Lambda to be triggered by the test SQS queue.
+      mockServiceLambda.addEventSource(new SqsEventSource(mockCapabilityQueue));
+
+      // 5. Create an API Gateway to provide a control plane for the tests.
+      const api = new apigateway.LambdaRestApi(this, 'MockServiceApi', {
+        handler: mockServiceLambda,
+        proxy: true,
+      });
+
+      // 6. Grant permissions for the mock service.
+      mockConfigTable.grantReadWriteData(mockServiceLambda);
+      commandQueue.grantSendMessages(mockServiceLambda); // Allow mock to send replies
+
+      // 7. Override the orchestrator's capability env vars to point to the mock queue.
+      const capabilityServices = ['DECLARATION_COMMUNICATOR', 'IMPORT'];
+      capabilityServices.forEach(serviceName => {
+        const envVarName = `CCH_CAPABILITY_${serviceName}`;
+        orchestratorLambda.addEnvironment(envVarName, mockCapabilityQueue.queueUrl);
+      });
+
+      // 8. Add outputs for the test framework.
+      new cdk.CfnOutput(this, 'MockServiceApiEndpoint', {
+        value: api.url,
+        description: 'Endpoint URL for the Mock Capability Service Control Plane',
+      });
+      new cdk.CfnOutput(this, 'MockConfigTableName', {
+        value: mockConfigTable.tableName,
+        description: 'Name of the DynamoDB table for mock configurations',
+      });
+    }
   }
 }

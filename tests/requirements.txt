@@ -1,0 +1,7 @@
+pytest
+pytest-bdd
+boto3
+python-dotenv
+pyyaml
+jsonschema
+requests 

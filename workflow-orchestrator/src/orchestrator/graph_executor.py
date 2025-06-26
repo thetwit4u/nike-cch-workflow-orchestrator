@@ -6,7 +6,7 @@ from threading import Lock
 from orchestrator.state import WorkflowState
 
 logger = logging.getLogger(__name__)
-
+    
 class GraphExecutor:
     """
     This class is currently a placeholder.
