@@ -132,3 +132,62 @@ cdk deploy
 ```
 
 This approach ensures that no secrets or environment-specific configurations are stored in the source code, adhering to security best practices and preparing the application for automated CI/CD pipelines.
+
+## End-to-End Testing
+
+The project includes a comprehensive end-to-end testing suite built with `pytest-bdd`. This suite deploys a complete, ephemeral instance of the orchestrator and its dependencies (including a mock capability service) to AWS for each test run.
+
+### How It Works
+
+1.  **Ephemeral AWS Environment**: The test runner uses the AWS CDK to deploy a new, isolated stack for the test session. This includes the orchestrator Lambda, SQS queues, DynamoDB tables, and a mock capability service.
+2.  **Mock Service Control**: The mock service is a hybrid Lambda function. It listens for SQS messages from the orchestrator (simulating a real capability) and also exposes an HTTP API. The BDD tests use this API's control plane to configure how the mock service should respond to specific capability calls for each scenario.
+3.  **BDD Scenarios**: Tests are defined in Gherkin (`.feature` files) located in `tests/features`. These business-readable scenarios drive the test execution.
+4.  **Automatic Teardown**: After the test run is complete, the test framework automatically destroys the entire CDK stack, ensuring no resources are left running.
+
+### Running the Tests
+
+To run the entire test suite, follow these steps:
+
+**1. Create the BDD Environment File**
+
+The tests require a dedicated environment file to configure the CDK deployment. Create a file named `.env.bdd` inside the `workflow-orchestrator/cdk/` directory with the following content:
+
+```bash
+# Environment variables for BDD testing
+
+# Sets the owner for resource naming to keep test resources separate.
+CCH_OWNER=bdd
+
+# Sets the deployment environment.
+CDK_ENV=dev
+
+# --- Standard Nike Tags for CDK ---
+NIKE_OWNER="bdd.tester@nike.com"
+NIKE_DL="some.dl@nike.com"
+NIKE_ORG_L3="trade-customs-compliance-hub-test"
+
+# This can be left empty for testing.
+AUTHORIZED_COMMAND_QUEUE_SENDERS=""
+```
+
+**2. Execute the Test Command**
+
+From the project's root directory (`cch-workflow-orchestrator`), run the following command. This command chains together all the necessary steps:
+
+```bash
+# 1. Install Python dependencies for the tests and the orchestrator
+pip install -r tests/requirements.txt && \
+pip install -r workflow-orchestrator/src/requirements.txt && \
+\
+# 2. Navigate to the CDK directory and install Node.js dependencies
+cd workflow-orchestrator/cdk && \
+npm install && \
+\
+# 3. Deploy the test stack using the BDD environment file
+./cdk-with-env.sh -f .env.bdd deploy --all --require-approval never -c test=true && \
+\
+# 4. Navigate back to the project root and run pytest
+cd ../../ && \
+pytest tests/
+```
+This command will take several minutes to complete as it includes a full cloud deployment.
