@@ -6,7 +6,7 @@ loadPipelines('trade', 'trade') // Load the main pipeline
 def parameterMap = [
   name: "cch-workflow-orchestrator",
   description: "The project contains all code & infra configuration (that isn't in the general infrastructure-repo) specific for cch workflow orchestrator.",
-  buildSubPath: "workflow-orchestrator/src"
+  buildSubPath: "workflow-orchestrator/src",
   deploySubPath: "workflow-orchestrator/cdk"
 ]
 
