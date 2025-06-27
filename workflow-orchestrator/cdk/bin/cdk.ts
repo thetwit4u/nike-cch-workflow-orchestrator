@@ -4,7 +4,7 @@ import { CchWorkflowOrchestratorStack } from '../lib/cdk-stack';
 
 // Get profile from command line arguments
 const app = new cdk.App();
-const env = app.node.tryGetContext('env') || process.env.CDK_ENV || 'dev';
+const env = app.node.tryGetContext('env') || process.env.ENVIRONMENT || 'dev';
 const owner = app.node.tryGetContext('owner') || process.env.CCH_OWNER || '';
 const ownerSuffix = owner ? `-${owner}` : '';
 const profile = app.node.tryGetContext('profile'); // Allow profile to be passed via --profile
