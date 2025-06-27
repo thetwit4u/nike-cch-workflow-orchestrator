@@ -14,7 +14,6 @@ export class CchWorkflowOrchestratorStack extends Stack {
     // Dynamic values from context or environment
     const env = this.node.tryGetContext('env') || process.env.ENVIRONMENT || 'st';
     const owner = this.node.tryGetContext('owner') || process.env.CCH_OWNER || 'userid';
-    const orgLevel3 = process.env.NIKE_ORG_L3 || 'trade-customs-compliance-hub';
 
     // Get the list of authorized services for command queue access from environment variable
     const authorizedServicesList = process.env.AUTHORIZED_COMMAND_QUEUE_SENDERS || '';

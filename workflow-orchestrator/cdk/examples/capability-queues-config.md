@@ -38,7 +38,7 @@ CCH_CAPABILITY_REVERSE_IMAGE_SEARCH=https://sqs.eu-west-1.amazonaws.com/12345678
 
 ## Mock Queue
 
-For development environments (`dev`), a mock capability queue is automatically created by the CDK stack. This queue is available to the Lambda function as `CCH_CAPABILITY_MOCK_QUEUE` without any additional configuration.
+For development environments (`st`), a mock capability queue is automatically created by the CDK stack. This queue is available to the Lambda function as `CCH_CAPABILITY_MOCK_QUEUE` without any additional configuration.
 
 If you want to override this auto-created queue, you can set the environment variable explicitly:
 
