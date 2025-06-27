@@ -6,9 +6,9 @@
 
 # External services authorized to send messages to command queue
 # Format: comma-separated list of ARNs or function/service names
-AUTHORIZED_COMMAND_QUEUE_SENDERS=lambda:function:external-service-1,lambda:function:external-service-2,123456789012:role/external-service-role
+# AUTHORIZED_COMMAND_QUEUE_SENDERS=lambda:function:external-service-1,lambda:function:external-service-2,123456789012:role/external-service-role
 # To specify full ARNs, use:
-# AUTHORIZED_COMMAND_QUEUE_SENDERS=arn:aws:lambda:eu-west-1:123456789012:function:external-service-1,arn:aws:iam::123456789012:role/external-service-role
+AUTHORIZED_COMMAND_QUEUE_SENDERS=arn:aws:lambda:eu-west-1:123456789012:function:external-service-1,arn:aws:iam::123456789012:role/external-service-role
 
 # Capability Queue URLs for Workflow Orchestrator
 # These are automatically passed to the Lambda function environment
