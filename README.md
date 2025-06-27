@@ -90,7 +90,7 @@ The CDK stack is designed to be deployed to multiple environments (e.g., `dev`, 
 
 The stack applies several standard NIKE tags and uses environment information for resource naming. These are read from environment variables during `cdk deploy`:
 
--   `CDK_ENV`: The deployment environment (e.g., `dev`, `qa`, `prod`). Defaults to `dev`.
+-   `ENVIRONMENT`: The deployment environment (e.g., `st`, `dev`, `qa`, `prod`). Defaults to `st`.
 -   `CCH_OWNER`: The ID of the resource owner, used for naming dev resources (e.g., `jsmith`).
 -   `NIKE_TAGGUID`: The Nike-specific tag GUID.
 -   `NIKE_OWNER`: The owner's email for tagging.
@@ -109,11 +109,11 @@ There is also a special variable for a mock queue, which is used as a fallback i
 
 ### Deployment Command Example
 
-To deploy the stack for the `dev` environment, you would navigate to the `workflow-orchestrator/cdk` directory and run a command like this:
+To deploy the stack for the `st` environment, you would navigate to the `workflow-orchestrator/cdk` directory and run a command like this:
 
 ```bash
 # Set environment variables for tagging and configuration
-export CDK_ENV="dev"
+export ENVIRONMENT="st"
 export CCH_OWNER="jsmith"
 export NIKE_TAGGUID="xyz-123"
 export NIKE_OWNER="john.smith@nike.com"

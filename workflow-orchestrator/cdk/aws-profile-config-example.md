@@ -17,7 +17,7 @@ AWS_REGION=eu-west-1
 
 # CDK and application variables
 CDK_DEFAULT_ACCOUNT=123456789012
-CDK_ENV=dev
+ENVIRONMENT=st
 CCH_OWNER=david
 NIKE_ORG_L3=trade-customs-compliance-hub
 NIKE_OWNER=david.vanheeswijck@nike.com
@@ -71,7 +71,7 @@ When using the `--context profile=dev` parameter, the CDK deployment will automa
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| CDK_ENV | dev | Environment name |
+| ENVIRONMENT | st | Environment name |
 | CCH_OWNER | david | Owner identifier |
 | NIKE_ORG_L3 | trade-customs-compliance-hub | Organization level 3 |
 | NIKE_OWNER | david.vanheeswijck@nike.com | Owner email |
@@ -96,7 +96,7 @@ If you need to customize environment variables beyond what's automatically set, 
 ```bash
 # .env
 CDK_DEFAULT_ACCOUNT=123456789012
-CDK_ENV=dev
+ENVIRONMENT=dev
 CCH_OWNER=david
 NIKE_ORG_L3=trade-customs-compliance-hub
 NIKE_OWNER=david.van@nike.com

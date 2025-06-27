@@ -9,8 +9,10 @@ export class CchWorkflowOrchestratorStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
+    Tags.of(this).add('nike-tagguid', `${process.env.NIKE_TAGGUID}`);
+
     // Dynamic values from context or environment
-    const env = this.node.tryGetContext('env') || process.env.ENVIRONMENT || 'dev';
+    const env = this.node.tryGetContext('env') || process.env.ENVIRONMENT || 'st';
     const owner = this.node.tryGetContext('owner') || process.env.CCH_OWNER || 'userid';
     const orgLevel3 = process.env.NIKE_ORG_L3 || 'trade-customs-compliance-hub';
 
@@ -54,14 +56,6 @@ export class CchWorkflowOrchestratorStack extends Stack {
       }
       return undefined;
     };
-
-    Tags.of(this).add('nike-owner', process.env.NIKE_OWNER || 'stijn.liesenborghs@nike.com');
-    Tags.of(this).add('nike-distributionlist', process.env.NIKE_DL || 'Lst-gt.scpt.tt.trade.all@Nike.com');
-    Tags.of(this).add('nike-environment', env);
-    Tags.of(this).add('nike-org-level1', 'scpt');
-    Tags.of(this).add('nike-org-level2', 'trade-transportation');
-    Tags.of(this).add('nike-org-level3', orgLevel3);
-    Tags.of(this).add('nike-owner-id', owner);
 
     this.templateOptions.description = "Stack for the CCH Workflow Orchestrator PoC";
 
@@ -292,7 +286,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
 
     // Create a mock capability queue for development environments
     let mockCapabilityQueue: sqs.Queue | undefined = undefined;
-    if (env === 'dev') {
+    if (env === 'test') {
       mockCapabilityQueue = new sqs.Queue(this, 'MockCapabilityQueue', {
         queueName: mockQueueName,
         visibilityTimeout: Duration.seconds(300),

@@ -4,7 +4,7 @@ import { CchWorkflowOrchestratorStack } from '../lib/cdk-stack';
 
 // Get profile from command line arguments
 const app = new cdk.App();
-const env = app.node.tryGetContext('env') || process.env.ENVIRONMENT || 'dev';
+const env = app.node.tryGetContext('env') || process.env.ENVIRONMENT || 'st';
 const owner = app.node.tryGetContext('owner') || process.env.CCH_OWNER || '';
 const ownerSuffix = owner ? `-${owner}` : '';
 const profile = app.node.tryGetContext('profile'); // Allow profile to be passed via --profile
@@ -23,7 +23,7 @@ if (profile) {
   // If profile is 'dev', set development environment variables only if not already set
   if (profile === 'dev') {
     // Only set if not already defined in environment
-    if (!process.env.ENVIRONMENT) process.env.ENVIRONMENT = 'dev';
+    if (!process.env.ENVIRONMENT) process.env.ENVIRONMENT = 'st';
     if (!process.env.NIKE_ORG_L3) process.env.NIKE_ORG_L3 = 'trade-customs-compliance-hub';
     if (!process.env.NIKE_DL) process.env.NIKE_DL = 'Lst-gt.scpt.tt.trade.all@Nike.com';
     

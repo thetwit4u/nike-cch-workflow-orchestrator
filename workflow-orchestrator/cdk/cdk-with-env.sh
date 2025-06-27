@@ -16,7 +16,7 @@ set +a  # Turn off auto-export
 # Debug output
 echo "Loaded environment variables from .env:"
 echo "CCH_OWNER=${CCH_OWNER}"
-echo "CDK_ENV=${CDK_ENV}"
+echo "ENVIRONMENT=${ENVIRONMENT}"
 
 # Run the CDK command with all arguments passed to this script
 # Use env to explicitly pass environment variables to the Node.js process
