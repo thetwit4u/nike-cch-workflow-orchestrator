@@ -24,10 +24,6 @@ if (profile) {
   if (profile === 'dev') {
     // Only set if not already defined in environment
     if (!process.env.ENVIRONMENT) process.env.ENVIRONMENT = 'st';
-    if (!process.env.NIKE_ORG_L3) process.env.NIKE_ORG_L3 = 'trade-customs-compliance-hub';
-    if (!process.env.NIKE_DL) process.env.NIKE_DL = 'Lst-gt.scpt.tt.trade.all@Nike.com';
-    
-    // Note: Not setting CCH_OWNER or NIKE_OWNER, as these should come from .env
   }
 }
 

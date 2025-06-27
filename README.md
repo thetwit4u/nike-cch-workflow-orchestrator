@@ -93,8 +93,6 @@ The stack applies several standard NIKE tags and uses environment information fo
 -   `ENVIRONMENT`: The deployment environment (e.g., `st`, `dev`, `qa`, `prod`). Defaults to `st`.
 -   `CCH_OWNER`: The ID of the resource owner, used for naming dev resources (e.g., `jsmith`).
 -   `NIKE_TAGGUID`: The Nike-specific tag GUID.
--   `NIKE_OWNER`: The owner's email for tagging.
--   `NIKE_DL`: The distribution list for tagging.
 
 **2. Capability Configuration:**
 
@@ -116,8 +114,6 @@ To deploy the stack for the `st` environment, you would navigate to the `workflo
 export ENVIRONMENT="st"
 export CCH_OWNER="jsmith"
 export NIKE_TAGGUID="xyz-123"
-export NIKE_OWNER="john.smith@nike.com"
-export NIKE_DL="some.dl@nike.com"
 
 # Set capability queue URLs
 export CCH_CAPABILITY_REVERSE_IMAGE_SEARCH="https://sqs.us-east-1.amazonaws.com/123456789012/cch-capability-ris-dev-jsmith"
