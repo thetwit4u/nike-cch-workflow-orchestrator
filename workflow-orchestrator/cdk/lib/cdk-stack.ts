@@ -376,7 +376,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
       },
       timeout: Duration.seconds(30),
       bundling: {
-        assetExcludes: ['.DS_Store', '.venv', 'tests']
+        assetExcludes: ['.DS_Store', '.venv', 'venv', 'tests']
       }
     });
 
