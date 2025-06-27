@@ -1,9 +1,6 @@
 # Environment variables for CCH Flow Orchestrator CDK deployment
 # Copy this file to .env and fill in your values
 
-# Owner
-CCH_OWNER=david
-
 # AWS Region is set in the CDK stack but can be overridden here
 # AWS_REGION=eu-west-1
 
