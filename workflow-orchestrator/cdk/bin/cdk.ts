@@ -23,7 +23,7 @@ if (profile) {
   // If profile is 'dev', set development environment variables only if not already set
   if (profile === 'dev') {
     // Only set if not already defined in environment
-    if (!process.env.CDK_ENV) process.env.CDK_ENV = 'dev';
+    if (!process.env.ENVIRONMENT) process.env.ENVIRONMENT = 'dev';
     if (!process.env.NIKE_ORG_L3) process.env.NIKE_ORG_L3 = 'trade-customs-compliance-hub';
     if (!process.env.NIKE_DL) process.env.NIKE_DL = 'Lst-gt.scpt.tt.trade.all@Nike.com';
     

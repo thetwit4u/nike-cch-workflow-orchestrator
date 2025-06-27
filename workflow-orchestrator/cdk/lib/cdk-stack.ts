@@ -10,7 +10,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
     super(scope, id, props);
 
     // Dynamic values from context or environment
-    const env = this.node.tryGetContext('env') || process.env.CDK_ENV || 'dev';
+    const env = this.node.tryGetContext('env') || process.env.ENVIRONMENT || 'dev';
     const owner = this.node.tryGetContext('owner') || process.env.CCH_OWNER || 'userid';
     const orgLevel3 = process.env.NIKE_ORG_L3 || 'trade-customs-compliance-hub';
 
