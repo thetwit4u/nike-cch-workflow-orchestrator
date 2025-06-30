@@ -1,0 +1,22 @@
+FROM artifactory.nike.com:9002/fci/nike-debian-slim-python3-foundation:12.2.0-439
+
+WORKDIR /app
+
+USER root
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        python3-venv && \
+    rm -rf /var/lib/apt/lists/*
+
+USER docker
+
+COPY requirements.txt .
+
+RUN python3 -m venv /app/venv && \
+    . venv/bin/activate && \
+    pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["python"]

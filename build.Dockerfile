@@ -1,4 +1,4 @@
-FROM artifactory.nike.com:9002/fci/nike-debian-slim-python3-foundation:12.2.0-438
+FROM artifactory.nike.com:9002/fci/nike-debian-slim-python3-foundation:12.2.0-439
 
 USER root
 
