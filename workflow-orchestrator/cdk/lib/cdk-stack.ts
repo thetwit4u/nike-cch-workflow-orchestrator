@@ -4,6 +4,7 @@ import { aws_sqs as sqs, aws_dynamodb as dynamodb, aws_s3 as s3, aws_lambda as l
 import * as python from '@aws-cdk/aws-lambda-python-alpha';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as path from 'path';
+import { Platform } from "aws-cdk-lib/aws-ecr-assets";
 
 export class CchWorkflowOrchestratorStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
@@ -343,11 +344,11 @@ export class CchWorkflowOrchestratorStack extends Stack {
     });
 
     // Workflow Orchestrator Lambda Function
-    const orchestratorLambda = new python.PythonFunction(this, 'WorkflowOrchestratorFunction', {
-      entry: path.join(__dirname, '../../src'), // path to the python code
-      runtime: lambda.Runtime.PYTHON_3_13,
-      index: 'app.py', // file with the handler
-      handler: 'handler', // function name
+    const orchestratorLambda = new lambda.DockerImageFunction(this, 'WorkflowOrchestratorFunction', {
+      code: lambda.DockerImageCode.fromImageAsset('../src', {
+          file: 'Dockerfile',
+          platform: Platform.LINUX_AMD64
+      }),
       memorySize: 1024,
       environment: {
         STATE_TABLE_NAME: stateTable.tableName,
@@ -368,9 +369,6 @@ export class CchWorkflowOrchestratorStack extends Stack {
         ...capabilityEnvVars, // Spread the capability environment variables (will override the default if explicitly set)
       },
       timeout: Duration.seconds(30),
-      bundling: {
-        assetExcludes: ['.DS_Store', '.venv', 'venv', 'tests']
-      }
     });
 
     // Add SQS event sources
