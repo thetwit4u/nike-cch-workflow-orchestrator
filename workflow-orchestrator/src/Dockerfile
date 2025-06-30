@@ -9,7 +9,8 @@ RUN apt-get update && \
         python3-venv && \
     rm -rf /var/lib/apt/lists/* && \
     usermod -u 639 docker && \
-    groupmod -g 639 docker
+    groupmod -g 639 docker && \
+    chown -R docker:docker /app
 
 USER docker
 
