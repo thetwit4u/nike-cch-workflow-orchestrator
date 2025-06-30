@@ -1,6 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { aws_sqs as sqs, aws_dynamodb as dynamodb, aws_s3 as s3, aws_lambda as lambda, aws_logs as logs, Duration, Stack, StackProps, Tags, aws_iam as iam } from 'aws-cdk-lib';
+import { aws_sqs as sqs, aws_dynamodb as dynamodb, aws_s3 as s3, aws_lambda as lambda, aws_logs as logs, Duration, Stack, StackProps, Tags, aws_iam as iam, aws_ecr as ecr } from 'aws-cdk-lib';
 import * as python from '@aws-cdk/aws-lambda-python-alpha';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as path from 'path';
@@ -344,10 +344,14 @@ export class CchWorkflowOrchestratorStack extends Stack {
     });
 
     // Workflow Orchestrator Lambda Function
+    const repository = ecr.Repository.fromRepositoryName(this, "WorkflowOrchestratorRepo", process.env.SERVICE_NAME || '');
     const orchestratorLambda = new lambda.DockerImageFunction(this, 'WorkflowOrchestratorFunction', {
-      code: lambda.DockerImageCode.fromImageAsset('../src', {
-          file: 'Dockerfile',
-          platform: Platform.LINUX_AMD64
+      // code: lambda.DockerImageCode.fromImageAsset('../src', { // Uncomment if using local Docker build
+      //     file: 'Dockerfile',
+      //     platform: Platform.LINUX_AMD64
+      // }),
+      code: lambda.DockerImageCode.fromEcr(repository, {
+        tagOrDigest: process.env.SERVICE_VERSION || '',
       }),
       memorySize: 1024,
       environment: {
