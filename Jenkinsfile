@@ -15,7 +15,7 @@ def config = [
   profile: [
     team: "team/trade/import-export/common.groovy",
     quality: "team/trade/import-export/quality/python.groovy",
-    build: "team/trade/import-export/build/python.groovy",
+    build: "team/trade/import-export/build/python-container.groovy",
     deploy: "team/trade/import-export/deploy/cdk.groovy"
   ]
 ]
