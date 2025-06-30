@@ -1,6 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { aws_sqs as sqs, aws_dynamodb as dynamodb, aws_s3 as s3, aws_lambda as lambda, aws_logs as logs, Duration, Stack, StackProps, Tags, aws_iam as iam, aws_apigateway as apigateway } from 'aws-cdk-lib';
+import { aws_sqs as sqs, aws_dynamodb as dynamodb, aws_s3 as s3, aws_lambda as lambda, aws_logs as logs, Duration, Stack, StackProps, Tags, aws_iam as iam, aws_apigateway as apigateway, aws_scheduler as scheduler } from 'aws-cdk-lib';
 import * as python from '@aws-cdk/aws-lambda-python-alpha';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as path from 'path';
@@ -79,6 +79,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
     const stateTableName = `${mainPrefix}-workflow-state-table-${env}${ownerSuffix}`;
     const eventdataBucketName = `${mainPrefix}-eventdata-bucket-${env}${ownerSuffix}`;
     const definitionsBucketName = `${definitionsBucketPrefix}-${env}${ownerSuffix}`;
+    const schedulerGroupName = `${mainPrefix}-schedules-${env}${ownerSuffix}`;
 
     // SQS Queues
     const commandQueue = new sqs.Queue(this, 'OrchestratorCommandQueue', {
@@ -277,10 +278,6 @@ export class CchWorkflowOrchestratorStack extends Stack {
       });
     }
 
-    
-
-    
-
     // Create a mock capability queue for development environments
     let mockCapabilityQueue: sqs.Queue | undefined = undefined;
     if (env === 'dev') {
@@ -300,14 +297,18 @@ export class CchWorkflowOrchestratorStack extends Stack {
     }
 
     // Role for EventBridge Scheduler to invoke SQS
-    const schedulerRole = new iam.Role(this, 'SchedulerExecutionRole', {
+    const schedulerRole = new iam.Role(this, 'SchedulerRole', {
       assumedBy: new iam.ServicePrincipal('scheduler.amazonaws.com'),
     });
 
-    schedulerRole.addToPolicy(new iam.PolicyStatement({
-      actions: ['sqs:SendMessage'],
-      resources: [commandQueue.queueArn],
-    }));
+    // Grant the scheduler role permission to send messages to the command queue.
+    // This high-level grant method automatically handles the necessary SQS and KMS permissions.
+    commandQueue.grantSendMessages(schedulerRole);
+
+    // Create the schedule group that the client expects
+    const schedulerGroup = new scheduler.CfnScheduleGroup(this, 'SchedulerGroup', {
+      name: schedulerGroupName,
+    });
 
     // DynamoDB Table for State Persistence
     const stateTable = new dynamodb.Table(this, 'WorkflowStateTable', {
@@ -340,44 +341,100 @@ export class CchWorkflowOrchestratorStack extends Stack {
       autoDeleteObjects: true, // For PoC, delete objects on stack deletion
     });
 
+    // --- IAM Role for Test Execution ---
+    // This role is assumed by the BDD test runner to get necessary permissions.
+    const testExecutorArn = process.env.TEST_EXECUTOR_ARN;
+    if (testExecutorArn) {
+      const testExecutorRole = new iam.Role(this, 'TestExecutorRole', {
+        roleName: `${mainPrefix}-test-executor-role-${env}${ownerSuffix}`,
+        assumedBy: new iam.ArnPrincipal(testExecutorArn),
+        description: 'Role for BDD test execution, providing access to necessary AWS resources.',
+      });
+
+      // The default trust policy only allows sts:AssumeRole.
+      // We must explicitly add sts:TagSession for roles assumed via AWS SSO.
+      const defaultPolicy = testExecutorRole.assumeRolePolicy;
+      if (defaultPolicy) {
+        defaultPolicy.addStatements(
+          new iam.PolicyStatement({
+            actions: ['sts:TagSession'],
+            principals: [new iam.ArnPrincipal(testExecutorArn)],
+            effect: iam.Effect.ALLOW,
+          })
+        );
+      }
+
+      // Grant the test executor role write access to the S3 ingest bucket
+      eventdataBucket.grantWrite(testExecutorRole);
+
+      // Grant the test executor role read access to the state table for verification
+      testExecutorRole.addToPolicy(new iam.PolicyStatement({
+        sid: 'AllowTestRunnerToReadStateTable', // A unique ID to force a change
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'dynamodb:GetItem',
+          'dynamodb:Query',
+          'dynamodb:DescribeTable'
+        ],
+        resources: [stateTable.tableArn],
+      }));
+
+      // Grant the test executor role send access to the command queue
+      commandQueue.grantSendMessages(testExecutorRole);
+
+      // Grant the test executor role permissions to write to the S3 buckets
+      eventdataBucket.grantReadWrite(testExecutorRole);
+      definitionsBucket.grantReadWrite(testExecutorRole);
+      
+      // Grant the test executor role permissions to send messages to the mock capability queue
+      if (mockCapabilityQueue) {
+        mockCapabilityQueue.grantSendMessages(testExecutorRole);
+      }
+
+      new cdk.CfnOutput(this, 'TestExecutorRoleArn', {
+        value: testExecutorRole.roleArn,
+        description: 'ARN of the IAM role for the BDD test executor'
+      });
+    }
+
     // Workflow Orchestrator Lambda Function
-    const orchestratorLambda = new python.PythonFunction(this, 'WorkflowOrchestratorFunction', {
-      entry: path.join(__dirname, '../../src'), // path to the python code
+    const orchestratorLambda = new python.PythonFunction(this, 'OrchestratorLambda', {
+      functionName: `${mainPrefix}-lambda-${env}${ownerSuffix}`,
+      entry: path.join(__dirname, '../../src'), // Point to the entire src directory
       runtime: lambda.Runtime.PYTHON_3_13,
-      index: 'app.py', // file with the handler
-      handler: 'handler', // function name
+      index: 'app.py',
+      handler: 'handler',
       memorySize: 1024,
       environment: {
         STATE_TABLE_NAME: stateTable.tableName,
         DEFINITIONS_BUCKET_NAME: definitionsBucket.bucketName,
         COMMAND_QUEUE_URL: commandQueue.queueUrl,
         COMMAND_QUEUE_ARN: commandQueue.queueArn,
-
-        
         VERSION: new Date().toISOString(), // Force code update
         SCHEDULER_ROLE_ARN: schedulerRole.roleArn,
-        
-        // Set the mock capability queue URL for dev environment, if not already set in env vars
-        ...(mockCapabilityQueue && !('CCH_CAPABILITY_MOCK_QUEUE' in capabilityEnvVars) 
-          ? { CCH_CAPABILITY_MOCK_QUEUE: mockCapabilityQueue.queueUrl } 
-          : {}),
-          
-        ...capabilityEnvVars, // Spread the capability environment variables (will override the default if explicitly set)
+        SCHEDULER_GROUP_NAME: schedulerGroupName,
+        LOG_LEVEL: 'INFO',
+        ...capabilityEnvVars
       },
-      timeout: Duration.seconds(30),
+      timeout: Duration.seconds(300),
       bundling: {
         assetExcludes: ['.DS_Store', '.venv', 'tests']
       }
     });
 
-    // Add SQS event sources
-    orchestratorLambda.addEventSource(new SqsEventSource(commandQueue));
+    // Add SQS event source to trigger the Lambda
+    orchestratorLambda.addEventSource(new SqsEventSource(commandQueue, {
+      batchSize: 1
+    }));
     
-
-    // Grant permissions
+    // Grant the Lambda function permissions to consume messages from the queue
     commandQueue.grantConsumeMessages(orchestratorLambda);
+
+    // Grant the Lambda function permissions to read from the S3 bucket
+    definitionsBucket.grantRead(orchestratorLambda);
+    eventdataBucket.grantRead(orchestratorLambda);
     
-    
+    stateTable.grantReadWriteData(orchestratorLambda);
     
     // Grant permissions for mock capability queue if created
     if (mockCapabilityQueue) {
@@ -391,8 +448,8 @@ export class CchWorkflowOrchestratorStack extends Stack {
       resources: [schedulerRole.roleArn],
     }));
     orchestratorLambda.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['scheduler:CreateSchedule', 'scheduler:DeleteSchedule', 'scheduler:GetSchedule'],
-      resources: [`arn:aws:scheduler:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:schedule/cch-workflow-schedules/*`],
+      actions: ['scheduler:CreateSchedule', 'scheduler:UpdateSchedule', 'scheduler:DeleteSchedule', 'scheduler:GetSchedule'],
+      resources: [`arn:aws:scheduler:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:schedule/${schedulerGroupName}/*`],
     }));
 
     new logs.LogRetention(this, 'OrchestratorLogRetention', {
@@ -409,7 +466,6 @@ export class CchWorkflowOrchestratorStack extends Stack {
       index: 'app.py',
       handler: 'handler',
       environment: {
-
         VERSION: new Date().toISOString(), // Force code update
       },
       timeout: Duration.seconds(30),
@@ -442,18 +498,22 @@ export class CchWorkflowOrchestratorStack extends Stack {
 
     new cdk.CfnOutput(this, 'IngestBucketName', {
       value: eventdataBucket.bucketName,
-      description: 'Name of the S3 bucket for event data ingest',
+      description: 'Name of the S3 bucket for event data (ingest)'
     });
 
-    new cdk.CfnOutput(this, 'CommandQueueUrl', {
+    new cdk.CfnOutput(this, 'DefinitionsBucketName', {
+      value: definitionsBucket.bucketName,
+      description: 'Name of the S3 bucket for workflow definitions'
+    });
+
+    new cdk.CfnOutput(this, 'OrchestratorCommandQueueUrl', {
       value: commandQueue.queueUrl,
-      description: 'URL of the main orchestrator command SQS queue',
+      description: 'URL of the orchestrator command SQS queue'
     });
 
     // --- TEST-ONLY RESOURCES ---
     // The following resources are only created when deploying for testing.
     // For BDD tests to work, the stack must be deployed with: cdk deploy -c test=true
-    // This creates the mock services and API endpoints needed by the tests.
     if (props?.isTest) {
       
       // 1. Create a DynamoDB table to store mock configurations for tests.
@@ -474,7 +534,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
       const mockServiceLambda = new python.PythonFunction(this, 'MockCapabilityServiceLambda', {
         functionName: `${mainPrefix}-mock-service-${env}${ownerSuffix}`,
         entry: path.join(__dirname, '../../capability-mock-service'),
-        runtime: lambda.Runtime.PYTHON_3_11,
+        runtime: lambda.Runtime.PYTHON_3_13,
         index: 'app.py',
         handler: 'handler',
         timeout: Duration.seconds(30),
@@ -483,6 +543,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
           LOG_LEVEL: 'INFO',
           MOCK_CONFIG_TABLE_NAME: mockConfigTable.tableName,
           ORCHESTRATOR_COMMAND_QUEUE_URL: commandQueue.queueUrl, // Give mock access to the reply queue
+          VERSION: new Date().toISOString(), // Force redeployment on every run
         },
       });
 
@@ -499,22 +560,25 @@ export class CchWorkflowOrchestratorStack extends Stack {
       mockConfigTable.grantReadWriteData(mockServiceLambda);
       commandQueue.grantSendMessages(mockServiceLambda); // Allow mock to send replies
 
-      // 7. Override the orchestrator's capability env vars to point to the mock queue.
-      const capabilityServices = ['DECLARATION_COMMUNICATOR', 'IMPORT'];
-      capabilityServices.forEach(serviceName => {
-        const envVarName = `CCH_CAPABILITY_${serviceName}`;
-        orchestratorLambda.addEnvironment(envVarName, mockCapabilityQueue.queueUrl);
-      });
+      // 7. Grant the orchestrator permissions to use the test queue.
+      orchestratorLambda.addEnvironment('CCH_MOCK_SQS_URL', mockCapabilityQueue.queueUrl);
+      mockCapabilityQueue.grantSendMessages(orchestratorLambda);
 
-      // 8. Add outputs for the test framework.
+      // 8. Output the API Gateway URL for the tests to use.
       new cdk.CfnOutput(this, 'MockServiceApiEndpoint', {
         value: api.url,
-        description: 'Endpoint URL for the Mock Capability Service Control Plane',
+        description: 'Control plane endpoint for the mock capability service',
       });
-      new cdk.CfnOutput(this, 'MockConfigTableName', {
-        value: mockConfigTable.tableName,
-        description: 'Name of the DynamoDB table for mock configurations',
-      });
+    }
+
+    // Grant the Lambda function permissions to write to the state table
+    stateTable.grantReadWriteData(orchestratorLambda);
+
+    if (props?.isTest) {
+      const testExecutorUserArn = process.env.TEST_EXECUTOR_USER_ARN;
+      if (!testExecutorUserArn) {
+        // ... existing code ...
+      }
     }
   }
 }

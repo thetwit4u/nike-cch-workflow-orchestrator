@@ -25,6 +25,26 @@ class MockServiceClient:
         self.configure_endpoint = f"{self.base_url}control/configure"
         self.reset_endpoint = f"{self.base_url}control/reset"
 
+    def is_running(self) -> bool:
+        """
+        Checks if the mock service is running by making a POST request to its reset endpoint.
+        A successful response indicates the service is up and the control routes are working.
+        """
+        logger.info(f"Pinging mock service control endpoint at {self.reset_endpoint}")
+        try:
+            # We use the reset endpoint as a health check. A successful POST means
+            # the API Gateway and the Lambda backing it are operational.
+            response = requests.post(self.reset_endpoint, timeout=5)
+            if response.status_code == 200:
+                logger.info("Mock service is running.")
+                return True
+            else:
+                logger.warning(f"Mock service ping returned status {response.status_code}. Response: {response.text}")
+                return False
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to connect to mock service at {self.reset_endpoint}: {e}")
+            return False
+
     def configure_response(self, capability: str, response_type: str, response_data: dict = None):
         """
         Configures a mock capability to return a specific response.
@@ -58,5 +78,7 @@ class MockServiceClient:
             response.raise_for_status()
             logger.info("Successfully reset all mock configurations.")
         except requests.exceptions.RequestException as e:
+            if e.response is not None:
+                logger.error(f"Server response: {e.response.text}")
             logger.error(f"Failed to reset mock configurations: {e}")
             raise 

@@ -1,4 +1,4 @@
-schema_version: "1.1.2" # Updated version reflecting new node types
+schema_version: "1.1.1" # Updated version reflecting new node types
 workflow_name: "Import US Workflow"
 workflow_id: "import_us_v1"
 entry_point: Check_Filing_Pack_Creation_Started
@@ -25,7 +25,7 @@ nodes:
     library_function_id: "s3#read_jsonpath"
     parameters:
       input_s3_uri_key: "deliverySetURI"
-      jsonpath_expression: "$.consignment.plannedDischargeDate"
+      jsonpath_expression: "$.consignments[0].plannedDischargeDate"
     output_key: "plannedDischargeDate"
     on_success: Calculate_OTF_Date
     on_failure: Handle_Error
@@ -39,8 +39,8 @@ nodes:
       date_context_key: "plannedDischargeDate"
       timedelta:
         days: -10
-    output_key: "data.otfDate"
-    on_success: Set_Schedule_OTF_Date
+    output_key: "currentOtfDate"
+    on_success: Set_Schedule_OTF_Date # Directly proceed to schedule/reschedule
     on_failure: Handle_Error
 
   # Schedule (or reschedule) the filing pack creation. The old schedule is overridden automatically.
@@ -49,7 +49,7 @@ nodes:
     title: "Set/Update Schedule for Optimal Time of Filing (OTF)"
     description: "Schedules (or reschedules) the start of filing pack creation using the new OTF date. The existing schedule will be overridden."
     capability_id: "import#create_filingpacks"
-    input_keys: ["deliverySetURI"]
+    input_keys: [ "deliverySetURI" ]
     schedule_parameters:
       date_context_key: "currentOtfDate"
     on_schedule_set:
@@ -58,7 +58,6 @@ nodes:
       - filingPacksStatus
       - filingPacksError
       - importFilingPacks
-      - deliverySetImportEnrichedURI
     on_response: Check_Start_Import_Filing_Result # Go directly to check the result
     on_success: End_Workflow
     on_failure: Handle_Error
@@ -69,7 +68,7 @@ nodes:
     type: condition
     title: "Check Start Import Filing Result"
     # This node would check a status key set by 'Start_Filing_Pack_Processing'
-    condition_on_key: "filingPacksStatus" 
+    condition_on_key: "filingPacksStatus"
     branches:
       "CREATED": Start_Parallel_Monitoring
       "_default": Import_Filing_Pack_Creation_Error
@@ -87,8 +86,8 @@ nodes:
     type: async_request
     title: "Declaration Communicator : Start Import Filing"
     capability_id: "declaration_communicator#submit_import"
-    input_keys: ["current_map_item"]
-    request_output_keys: ["submitStatus", "submitError"]
+    input_keys: [ "current_map_item" ]
+    request_output_keys: [ "submitStatus", "submitError" ]
     on_response: Check_Submit_Success # Go directly to check the result
     on_failure: Handle_Error
 
@@ -177,7 +176,7 @@ nodes:
     type: async_request
     title: "Notify DeliverySet Customs Released"
     capability_id: "declaration_communicator#customs_released"
-    output_keys: ["deliverySetCustomsReleasedURI", "deliverySetCustomsReleasedStatus", "deliverySetCustomsReleasedError"]
+    output_keys: [ "deliverySetCustomsReleasedURI", "deliverySetCustomsReleasedStatus", "deliverySetCustomsReleasedError" ]
     on_response: End_Workflow # End after we get the final response
 
   # --- Generic Error Handling ---
@@ -195,7 +194,7 @@ nodes:
     message_from_context_key: "filingPacksError"
     default_message: "Failed to create or submit import filing packs."
     on_success: End_Workflow
-    
+
   Log_Submit_Error:
     type: log_error
     title: "Log Error: Filing Pack Submission Failed"

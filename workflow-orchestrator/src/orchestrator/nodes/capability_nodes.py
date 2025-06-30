@@ -15,7 +15,7 @@ from utils.command_parser import CommandParser
 from clients.scheduler_client import SchedulerClient
 import dateutil.parser
 
-from langgraph.graph import Interrupt
+from langgraph.types import Interrupt, interrupt
 
 from orchestrator.state import WorkflowState
 
@@ -68,7 +68,7 @@ def handle_sync_call(state: WorkflowState, node_config: dict, node_name: str) ->
         logger.info(f"Executing 'sync_call' node '{node_name}'. Pausing for Human-in-the-Loop response.")
         # We must interrupt execution here to wait for the HITL_RESP.
         # A real implementation would also send a message to a UI or notification service.
-        raise Interrupt()
+        return interrupt()
     except Exception as e:
         logger.error(f"Error in 'sync_call' node '{node_name}': {e}")
         state["is_error"] = True
@@ -108,14 +108,14 @@ def handle_async_request(state: WorkflowState, node_config: dict, node_name: str
             
             logger.info(f"Sending ASYNC_REQ to SQS queue for capability '{capability_id}'.")
             queue_client.send_message(
-                queue_name=sqs_queue,
-                message_body=command_payload
+                queue_url=sqs_queue,
+                message_body=json.dumps(command_payload)
             )
 
         logger.info(f"Successfully sent async request for capability '{capability_id}'. Pausing for response.")
         
         # We must interrupt execution here to wait for the async response
-        raise Interrupt()
+        return interrupt()
 
     except Exception as e:
         logger.error(f"Error in 'async_request' node '{node_name}': {e}")
@@ -131,15 +131,25 @@ def handle_scheduled_request(state: WorkflowState, node_config: dict, node_name:
     It can also update the state immediately upon schedule creation.
     """
     try:
+        # If this is a user-initiated update, we don't interrupt. We let the graph
+        # flow to the conditional node which will then loop back to recalculate.
+        if state.get("data", {}).get("_user_update_request"):
+            logger.info(f"User update detected in '{node_name}'. Bypassing interrupt to allow recalculation loop.")
+            # Consume the flag by creating a new data dict without it
+            new_data = state.get("data", {}).copy()
+            new_data.pop("_user_update_request", None)
+            return {"data": new_data} # Return patch
+
+        # IDEMPOTENCY CHECK: Use a node-specific internal flag to see if this node
+        # is being re-invoked after its scheduled task has already fired.
+        idempotency_key = f"_{node_name}_resumed"
+        if state.get("context", {}).get(idempotency_key):
+            logger.info(f"Resuming from '{node_name}' after scheduled task has executed. Proceeding.")
+            return state # The work is done, just pass the state along.
+
         logger.info(f"Executing 'scheduled_request' node '{node_name}' with config: {node_config}")
         
-        # 1. Immediate state update (if defined)
-        on_schedule_set = node_config.get("on_schedule_set")
-        if on_schedule_set:
-            state["data"].update(on_schedule_set)
-            logger.info(f"Updated state with on_schedule_set payload: {on_schedule_set}")
-
-        # 2. Initialize clients and get schedule parameters
+        # 1. Initialize clients and get schedule parameters
         scheduler_client = SchedulerClient()
         schedule_params = node_config.get("schedule_parameters", {})
         date_key = schedule_params.get("date_context_key")
@@ -153,7 +163,7 @@ def handle_scheduled_request(state: WorkflowState, node_config: dict, node_name:
         schedule_time = dateutil.parser.isoparse(date_str)
         schedule_time_str = schedule_time.strftime('%Y-%m-%dT%H:%M:%S')
 
-        # 3. Define the actual async request to be sent when the schedule fires
+        # 2. Define the actual async request to be sent when the schedule fires
         next_command_payload = {
             "capability_id": node_config.get("capability_id"),
             "input_keys": node_config.get("input_keys"),
@@ -161,15 +171,20 @@ def handle_scheduled_request(state: WorkflowState, node_config: dict, node_name:
             "on_response": node_config.get("on_response")
         }
 
-        # 4. Construct the internal "wake-up" command
+        # 3. Construct the internal "wake-up" command, embedding the state update payload
         command_parser = CommandParser(state, node_config)
+        
+        # Start with the business-logic payload and add our internal idempotency flag
+        state_update_payload = node_config.get("on_schedule_set", {})
+        state_update_payload[idempotency_key] = True
+
         internal_command = command_parser.create_internal_command(
             command_type="EXECUTE_SCHEDULED_TASK",
-            state_update={}, # The state update is now immediate, not deferred.
+            state_update=state_update_payload, # Embed it here
             next_command=next_command_payload
         )
 
-        # 5. Determine the orchestrator's own queue and schedule name
+        # 4. Determine the orchestrator's own queue and schedule name
         orchestrator_queue_arn = os.environ.get("COMMAND_QUEUE_ARN")
         if not orchestrator_queue_arn:
             raise ValueError("Orchestrator's own COMMAND_QUEUE_ARN is not configured.")
@@ -177,22 +192,29 @@ def handle_scheduled_request(state: WorkflowState, node_config: dict, node_name:
         workflow_instance_id = state['context']['workflowInstanceId']
         schedule_name = f"{workflow_instance_id}-{node_name}"
 
-        # 6. Create or update the one-time schedule
+        # 5. Create or update the one-time schedule, passing the full current state
+        # The scheduler client will use this to check for test overrides.
         scheduler_client.create_or_update_onetime_schedule(
             schedule_name=schedule_name,
             schedule_time=schedule_time_str,
             target_arn=orchestrator_queue_arn,
-            payload=internal_command
+            payload=internal_command,
+            state_context=state # Pass the full state here
         )
         
-        logger.info(f"Successfully scheduled internal task for node '{node_name}' at {schedule_time_str}.")
+        logger.info(f"Successfully scheduled internal task for node '{node_name}' at {schedule_time_str}. Pausing workflow.")
+        
+        # Interrupt the graph to wait for the scheduled task to fire.
+        # This is a terminal action for this function path.
+        return interrupt("Pausing to wait for the scheduled task to execute.")
 
-    except Exception as e:
-        logger.error(f"Error in 'scheduled_request' node '{node_name}': {e}")
+    except (ClientError, ValueError) as e:
+        # This block should only catch actual operational errors, not control-flow
+        # exceptions like Interrupt.
+        logger.error(f"Error in 'scheduled_request' node '{node_name}': {e}", exc_info=True)
         state["is_error"] = True
         state["error_details"] = {"error": str(e), "node": node_name}
-    
-    return state
+        return state # On error, we return the updated state to proceed to the 'on_failure' node.
 
 
 # --- Factory Functions ---

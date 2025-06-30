@@ -1,5 +1,5 @@
 import logging
-from ..state import WorkflowState
+from orchestrator.state import WorkflowState
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langchain_core.runnables import RunnableConfig
 
@@ -137,3 +137,58 @@ def handle_log_error(state: WorkflowState, node_config: dict, node_name: str) ->
         state["error_details"] = None
 
     return state
+
+def handle_set_state(state: WorkflowState, node_config: dict, node_name: str) -> dict:
+    """
+    Handles a 'set_state' node by merging a static dictionary into the 'context' field of the state.
+    """
+    logger.info(f"Executing 'set_state' node '{node_name}'")
+    static_outputs = node_config.get("static_outputs", {})
+    if not static_outputs:
+        logger.warning(f"'set_state' node '{node_name}' has no 'static_outputs' to apply.")
+        return {} # Return an empty patch
+
+    # The 'status' and other metadata belong in the 'context' channel.
+    return {"context": static_outputs}
+
+def handle_start_node(state: WorkflowState, node_config: dict, node_name: str) -> WorkflowState:
+    """
+    A simple pass-through node that marks the start of the workflow.
+    """
+    logger.info(f"Executing start node '{node_name}'")
+    return state
+
+def set_state_node_wrapper(state: WorkflowState, node_config: dict, node_name: str) -> dict:
+    """
+    Handles 'set_state' nodes, updating the workflow state with static values.
+    Also used internally by 'end' nodes to set the final status.
+    """
+    logger.info(f"Executing set_state node '{node_name}'.")
+    static_outputs = node_config.get('static_outputs', {}).copy()
+    
+    # The outputs are merged into the 'data' channel of the state.
+    # The current_node tracking is merged into the 'context' channel.
+    return {
+        "data": static_outputs,
+        "context": {"current_node": node_name}
+    }
+
+def sync_capability_node_wrapper(state: dict, handler, node_config: dict, node_name: str) -> dict:
+    """
+    A generic wrapper for synchronous capability nodes that handles input mapping,
+    execution, and output mapping without supporting interruption.
+    """
+    logger.info(f"Executing sync capability node '{node_name}'")
+    try:
+        # This wrapper will be very similar to the library_node_wrapper, but for capabilities
+        # For now, we'll assume a simple pass-through to the handler, which will
+        # be responsible for its own state interaction.
+        # This can be built out with more generic logic later.
+        return handler(state, node_config, node_name)
+        
+    except Exception as e:
+        logger.exception(f"Error executing sync capability node '{node_name}'")
+        return {
+            "is_error": True,
+            "error_details": {"node": node_name, "error": str(e)}
+        }

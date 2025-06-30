@@ -2,12 +2,13 @@ import subprocess
 import os
 from pathlib import Path
 import logging
+import argparse
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class TestEnvironmentManager:
+class EnvironmentManager:
     """
     Manages the deployment and destruction of the AWS CDK test stack.
 
@@ -65,7 +66,7 @@ class TestEnvironmentManager:
             logger.error("STDERR:\n%s", e.stderr)
             raise e
 
-    def deploy(self):
+    def deploy(self, profile: str = None):
         """
         Deploys the CDK stack and captures the outputs to a JSON file.
 
@@ -73,9 +74,12 @@ class TestEnvironmentManager:
         The '--outputs-file' flag directs the CDK to write stack outputs to a
         specified file, which is crucial for configuring tests dynamically.
         """
-        logger.info("Deploying CDK stack...")
+        logger.info("Deploying CDK stack for BDD tests...")
+        
         command = [
-            "cdk",
+            "./cdk-with-env.sh",
+            "-f",
+            ".env.bdd",
             "deploy",
             "--all",
             "--require-approval",
@@ -86,17 +90,44 @@ class TestEnvironmentManager:
             "-c",
             "test=true",
         ]
+        if profile:
+            command.extend(["--profile", profile])
+            
         self._run_command(command)
         logger.info(f"CDK stack deployed. Outputs saved to {self.output_file}")
 
-    def destroy(self):
+    def destroy(self, profile: str = None):
         """
         Destroys the CDK stack.
 
         The '--force' flag is used to bypass the confirmation prompt, which is
         necessary for automated teardown.
         """
-        logger.info("Destroying CDK stack...")
-        command = ["cdk", "destroy", "--all", "--force"]
+        logger.info("Destroying CDK stack for BDD tests...")
+
+        command = [
+            "./cdk-with-env.sh",
+            "-f",
+            ".env.bdd",
+            "destroy",
+            "--all",
+            "--force",
+        ]
+        if profile:
+            command.extend(["--profile", profile])
+            
         self._run_command(command)
-        logger.info("CDK stack destroyed successfully.") 
+        logger.info("CDK stack destroyed successfully.")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Manage the BDD test environment.")
+    parser.add_argument("action", choices=["deploy", "destroy"], help="The action to perform.")
+    parser.add_argument("--profile", help="The AWS profile to use for the command.")
+    args = parser.parse_args()
+
+    manager = EnvironmentManager()
+
+    if args.action == "deploy":
+        manager.deploy(profile=args.profile)
+    elif args.action == "destroy":
+        manager.destroy(profile=args.profile) 

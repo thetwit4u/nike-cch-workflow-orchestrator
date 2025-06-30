@@ -2,6 +2,7 @@ import os
 import yaml
 import logging
 import boto3
+import json
 from utils.parser import parse_workflow_definition
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,21 @@ class S3Client:
             return parse_workflow_definition(yaml_content)
         except Exception as e:
             logger.error(f"Error fetching/parsing definition from {s3_uri}: {e}")
+            raise
+
+    def read_json(self, bucket_name: str, s3_key: str) -> dict:
+        """
+        Fetches an object from S3 and parses it as JSON.
+        """
+        try:
+            logger.info(f"Fetching JSON from bucket '{bucket_name}' with key '{s3_key}'")
+            
+            response = self.s3.get_object(Bucket=bucket_name, Key=s3_key)
+            json_content = response['Body'].read().decode('utf-8')
+            
+            return json.loads(json_content)
+        except Exception as e:
+            logger.error(f"Error fetching/parsing JSON from s3://{bucket_name}/{s3_key}: {e}")
             raise
 
     def _parse_s3_uri(self, s3_uri: str) -> tuple[str, str]:

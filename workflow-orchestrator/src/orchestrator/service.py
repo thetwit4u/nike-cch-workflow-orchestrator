@@ -3,12 +3,13 @@ import os
 from typing import Dict, Any
 from clients.queue_client import QueueClient
 from clients.http_client import HttpClient
-from lib.langgraph_checkpoint_dynamodb.saver import DynamoDBSaver
-from lib.langgraph_checkpoint_dynamodb.config import DynamoDBConfig, DynamoDBTableConfig
+
+from lib.langgraph_checkpoint_dynamodb.langgraph_checkpoint_dynamodb.saver import DynamoDBSaver
+from lib.langgraph_checkpoint_dynamodb.langgraph_checkpoint_dynamodb.config import DynamoDBConfig, DynamoDBTableConfig
 from orchestrator.graph_builder import GraphBuilder
 from utils.logging_adapter import WorkflowIdAdapter
 from clients.s3_client import S3Client
-from langgraph.graph import CompiledGraph
+from langgraph.graph.graph import CompiledGraph
 from utils.command_parser import CommandParser
 
 logger = logging.getLogger(__name__)
@@ -28,9 +29,10 @@ class OrchestratorService:
             raise ValueError("STATE_TABLE_NAME environment variable not set.")
         
         config = DynamoDBConfig(table_config=DynamoDBTableConfig(table_name=table_name))
-        self.state_saver = DynamoDBSaver(config)
+        self.state_saver = DynamoDBSaver(config=config)
         self.s3_client = S3Client()
         self.compiled_graphs: Dict[str, CompiledGraph] = {}
+        self.graph_cache: Dict[str, CompiledGraph] = {}
         logger.info("OrchestratorService initialized.")
 
     @classmethod
@@ -39,14 +41,30 @@ class OrchestratorService:
             cls._instance = cls()
         return cls._instance
 
-    def _get_or_compile_graph(self, workflow_definition_uri: str) -> CompiledGraph:
-        if workflow_definition_uri not in self.compiled_graphs:
-            logger.info(f"Compiling new graph for definition: {workflow_definition_uri}")
-            definition = self.s3_client.get_workflow_definition(workflow_definition_uri)
-            builder = GraphBuilder(definition, self.state_saver)
-            graph = builder.compile_graph()
-            self.compiled_graphs[workflow_definition_uri] = graph
-        return self.compiled_graphs[workflow_definition_uri]
+    def _get_or_compile_graph(self, workflow_definition_uri: str, command: dict) -> CompiledGraph:
+        # Check for a test-only flag to bypass the cache
+        if command.get("payload", {}).get("_no_cache"):
+            logger.warning("'_no_cache' flag found. Bypassing graph cache.")
+            graph = self._compile_graph(workflow_definition_uri, logger)
+        else:
+            graph = self.graph_cache.get(workflow_definition_uri)
+            if not graph:
+                logger.info(f"Compiling new graph for definition: {workflow_definition_uri}")
+                graph = self._compile_graph(workflow_definition_uri, logger)
+                self.graph_cache[workflow_definition_uri] = graph
+            else:
+                logger.info(f"Using cached graph for definition: {workflow_definition_uri}")
+        
+        return graph
+
+    def _compile_graph(self, workflow_uri: str, adapter: logging.LoggerAdapter) -> CompiledGraph:
+        """Compiles a graph from a URI and adds it to the cache."""
+        s3 = S3Client()
+        definition = s3.get_workflow_definition(workflow_uri)
+        builder = GraphBuilder(definition, self.state_saver)
+        graph = builder.compile_graph()
+        self.graph_cache[workflow_uri] = graph
+        return graph
 
     def process_command(self, command_message: dict):
         instance_id = command_message.get('workflowInstanceId')
@@ -69,19 +87,49 @@ class OrchestratorService:
             return
 
         try:
-            graph = self._get_or_compile_graph(workflow_uri)
+            graph = self._get_or_compile_graph(workflow_uri, command)
             config = {"configurable": {"thread_id": instance_id}}
-            payload = command.get('payload', {})
+            
+            # Distinguish between starting a new workflow and updating an existing one.
+            current_state = graph.get_state(config)
 
             if command_type == 'EVENT':
-                initial_context = {
-                    **payload,
-                    "correlationId": command_message.get("correlationId"),
-                    "workflowInstanceId": instance_id,
-                    "workflow_definition_uri": workflow_uri,
-                }
-                graph.invoke({"context": initial_context, "data": payload}, config)
-                adapter.info("Successfully started workflow.")
+                payload = command.get('payload', {})
+                
+                # Check if the state has any persisted values. If not, it's a new workflow.
+                if not current_state.values:
+                    # --- This is a NEW workflow ---
+                    adapter.info("No existing state found. Starting new workflow.")
+                    initial_context = {
+                        "correlationId": command_message.get("correlationId"),
+                        "workflowInstanceId": instance_id,
+                        "workflow_definition_uri": workflow_uri,
+                    }
+                    # For a new workflow, the first invoke call creates the initial state and runs the graph.
+                    initial_state_patch = {"context": initial_context, "data": payload}
+                    adapter.info("Invoking graph with initial state to run to completion...")
+                    final_state = graph.invoke(initial_state_patch, config)
+                    adapter.info(f"Successfully ran workflow. Final state: {final_state}")
+                
+                else:
+                    # --- This is an UPDATE to an existing workflow ---
+                    # First, check if the workflow is past the point of no return.
+                    if current_state.values.get("data", {}).get("filingpackCreationStarted"):
+                        adapter.warning(f"Ignoring EVENT update because filing pack creation has already started.")
+                        return # Do nothing
+
+                    adapter.info("Existing state found. Updating and resuming workflow with new payload.")
+                    # Add a flag to signal that this is a user-initiated update,
+                    # which will cause the graph to loop back and recalculate.
+                    payload['_user_update_request'] = True
+                    # Merge the new payload into the existing state's data.
+                    # The `WorkflowState` reducer for 'data' will handle the update.
+                    graph.update_state(config, {"data": payload})
+                    # Re-invoke the graph. If it was paused at a scheduled node, this will
+                    # cause it to re-evaluate and create a new schedule with the updated data.
+                    adapter.info("Re-invoking graph to run to completion...")
+                    final_state = graph.invoke(None, config)
+                    adapter.info(f"Successfully updated and resumed workflow. Final state: {final_state}")
 
             elif command_type == 'ASYNC_RESP':
                 routing_hint = command.get('routingHint')
@@ -98,53 +146,32 @@ class OrchestratorService:
                         adapter.info(f"Routing ASYNC_RESP to child thread '{child_thread_id}'.")
                     else:
                         adapter.error(f"Could not find registered child thread for branch key '{branch_key}'.")
-            return
+                        return
 
-                resume_config = {"configurable": {"thread_id": thread_id}}
-                graph.update_state(resume_config, {"context": payload, "data": payload})
-                graph.invoke(None, resume_config)
-                adapter.info(f"Successfully resumed workflow on thread '{thread_id}'.")
+                    resume_config = {"configurable": {"thread_id": thread_id}}
+                    graph.update_state(resume_config, {"context": payload, "data": payload})
+                    graph.invoke(None, resume_config)
+                    adapter.info(f"Successfully resumed workflow on thread '{thread_id}'.")
 
             elif command_type == 'EXECUTE_SCHEDULED_TASK':
+                # This command is sent by the scheduler. Its purpose is to update the state
+                # with a payload that was defined when the schedule was created.
+                # This state update will, in turn, trigger the next step in the graph.
                 state_update = payload.get('state_update', {})
-                next_command = payload.get('next_command', {})
-
+                
                 if state_update:
-                    graph.update_state(config, {"data": state_update})
-                    adapter.info(f"Updated state with: {state_update} before sending scheduled command.")
-
-                original_context = payload.get('original_context', {})
-                original_data = payload.get('original_data', {})
-                temp_state = {"context": original_context, "data": {**original_data, **state_update}}
-                
-                command_parser = CommandParser(temp_state, next_command)
-                capability_command = command_parser.create_command_message("ASYNC_REQ")
-
-                capability_id = next_command.get("capability_id")
-                if not capability_id or '#' not in capability_id:
-                    raise ValueError(f"Invalid capability_id format: '{capability_id}'. Expected 'service#action'.")
-
-                capability_service = capability_id.split('#')[0].upper()
-                
-                # Check for a test-specific HTTP endpoint first.
-                test_endpoint_var = f"CCH_MOCK_HTTP_ENDPOINT_{capability_service}"
-                http_endpoint = os.environ.get(test_endpoint_var)
-
-                if http_endpoint:
-                    logger.info(f"Sending ASYNC_REQ to HTTP endpoint for capability '{capability_id}' from scheduled task.")
-                    self.http_client.post(http_endpoint, capability_command)
+                    adapter.info(f"Applying deferred state update from scheduled task: {state_update}")
+                    # Updating the state is what causes the graph to resume from its interrupted
+                    # state and move to the next node.
+                    graph.update_state(config, {"data": state_update, "context": state_update})
                 else:
-                    # Fallback to the production SQS queue configuration.
-                    prod_queue_var = f"CCH_CAPABILITY_{capability_service}"
-                    sqs_queue = os.environ.get(prod_queue_var)
-                    if not sqs_queue:
-                        raise ValueError(f"Endpoint for capability service '{capability_service}' is not configured. Checked for '{test_endpoint_var}' and '{prod_queue_var}'.")
+                    adapter.warning("Received an EXECUTE_SCHEDULED_TASK command with no state_update payload.")
+                
+                # After updating the state, we can simply invoke the graph with no input,
+                # and it will continue from where it left off.
+                final_state = graph.invoke(None, config)
+                adapter.info(f"Successfully resumed workflow from scheduled task. Final state: {final_state}")
 
-                    logger.info(f"Sending ASYNC_REQ to SQS queue for capability '{capability_id}' from scheduled task.")
-                    self.sqs_client.send_message(sqs_queue, capability_command)
-
-                adapter.info(f"Successfully sent ASYNC_REQ for capability '{capability_id}' from scheduled task.")
-            
             else:
                 adapter.warning(f"Unknown command type '{command_type}' cannot be processed.")
 

@@ -4,4 +4,6 @@ boto3
 python-dotenv
 pyyaml
 jsonschema
-requests 
+requests
+msgpack
+botocore 

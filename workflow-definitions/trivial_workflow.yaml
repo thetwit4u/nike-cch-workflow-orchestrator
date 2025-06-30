@@ -1,0 +1,12 @@
+id: trivial-workflow-v1
+name: Trivial Test Workflow
+description: A minimal workflow that starts and immediately ends. Used for basic connectivity and setup testing.
+entry_point: Start
+
+nodes:
+  Start:
+    type: entry
+    next: End_Workflow
+
+  End_Workflow:
+    type: end 

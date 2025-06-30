@@ -1,6 +1,13 @@
 {
-  "deliverySetId": "deliverySetId-001",
-  "data": {
-    "plannedDischargeDate": "2025-01-15T12:00:00Z"
-  }
+  "consignment": {
+    "billOfLadingNbr": "BOL-HP-001",
+    "plannedDischargeDate": "2025-01-15T12:00:00Z",
+    "totalShipmentCount": 1
+  },
+  "deliveries": [
+    {
+      "deliveryNoteNbr": "DN-HP-001",
+      "shipmentNbr": "SH-HP-001"
+    }
+  ]
 } 

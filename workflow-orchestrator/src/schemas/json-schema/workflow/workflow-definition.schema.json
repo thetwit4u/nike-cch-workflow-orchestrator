@@ -1,0 +1,183 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Workflow Definition",
+  "version": "0.0.1", 
+  "description": "Schema for the CCH Workflow Definition YAML file.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "The semantic version of this workflow definition schema.",
+      "const": "1.1.0"
+    },
+    "workflow_name": {
+      "type": "string",
+      "description": "Human-readable name for the workflow."
+    },
+    "workflow_id": {
+      "type": "string",
+      "description": "Unique machine-readable ID for this workflow definition."
+    },
+    "entry_point": {
+      "type": "string",
+      "description": "The name of the starting node in the 'nodes' object."
+    },
+    "initial_context": {
+      "type": "array",
+      "description": "A list of context keys that the Orchestrator should validate are present upon initiation.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "nodes": {
+      "type": "object",
+      "description": "A map where each key is the unique name of a node and the value is the node's definition.",
+      "additionalProperties": {
+        "$ref": "#/definitions/node"
+      }
+    }
+  },
+  "required": ["schema_version", "workflow_name", "workflow_id", "entry_point", "nodes"],
+  "definitions": {
+    "node": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "on_failure": { "type": "string", "description": "Node to transition to on failure." },
+        "type": {
+          "type": "string",
+          "enum": ["sync_call", "async_request", "condition", "fork", "join", "end_branch", "end", "library_call", "scheduled_request", "map_fork", "event_wait", "log_error"]
+        }
+      },
+      "required": ["type"],
+      "oneOf": [
+        { "$ref": "#/definitions/syncCallNode" },
+        { "$ref": "#/definitions/asyncRequestNode" },
+        { "$ref": "#/definitions/conditionNode" },
+        { "$ref": "#/definitions/forkNode" },
+        { "$ref": "#/definitions/joinNode" },
+        { "$ref": "#/definitions/endBranchNode" },
+        { "$ref": "#/definitions/endNode" },
+        { "$ref": "#/definitions/libraryCallNode" },
+        { "$ref": "#/definitions/scheduledRequestNode" },
+        { "$ref": "#/definitions/mapForkNode" },
+        { "$ref": "#/definitions/eventWaitNode" },
+        { "$ref": "#/definitions/logErrorNode" }
+      ]
+    },
+    "baseCallNode": {
+      "type": "object",
+      "properties": {
+        "capability_id": { "type": "string", "description": "Identifier for the capability function to call (e.g., 'import#enrichment')." },
+        "input_keys": { "type": "array", "items": { "type": "string" }, "description": "Keys to select from the data context to send to the capability." }
+      },
+      "required": ["capability_id"]
+    },
+    "syncCallNode": {
+      "allOf": [
+        { "$ref": "#/definitions/baseCallNode" },
+        {
+          "properties": {
+            "type": { "const": "sync_call" },
+            "output_keys": { "type": "array", "items": { "type": "string" }, "description": "Keys to take from the synchronous response and merge into the data context." },
+            "on_success": { "type": "string", "description": "Node to transition to on successful completion." }
+          }
+        }
+      ]
+    },
+    "asyncRequestNode": {
+      "allOf": [
+        { "$ref": "#/definitions/baseCallNode" },
+        {
+          "properties": {
+            "type": { "const": "async_request" },
+            "request_output_keys": { "type": "array", "items": { "type": "string" }, "description": "The keys expected in the async response from the capability." },
+            "on_response": { "type": "string", "description": "Node to transition to when the asynchronous response is received." }
+          },
+          "required": ["on_response"]
+        }
+      ]
+    },
+    "scheduledRequestNode": {
+      "allOf": [
+        { "$ref": "#/definitions/baseCallNode" },
+        {
+          "properties": {
+            "type": { "const": "scheduled_request" },
+            "schedule_parameters": { "$ref": "#/definitions/scheduleParameters" },
+            "on_schedule_set": { "type": "object", "description": "An object of key-value pairs to immediately merge into the state's 'data' object upon schedule creation." },
+            "request_output_keys": { "type": "array", "items": { "type": "string" }, "description": "The keys expected in the async response from the capability after the schedule executes." },
+            "on_response": { "type": "string", "description": "Node to transition to when the asynchronous response is received." },
+            "on_success": { "type": "string", "description": "Node to transition to after successfully creating the schedule." }
+          },
+          "required": ["schedule_parameters", "on_response", "on_success"]
+        }
+      ]
+    },
+    "libraryCallNode": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "library_call" },
+        "library_function_id": { "type": "string", "enum": ["s3#read_jsonpath", "core#calculate_timedelta"] },
+        "parameters": { "type": "object" },
+        "output_key": { "type": "string" },
+        "on_success": { "type": "string" }
+      },
+      "required": ["library_function_id", "parameters", "output_key", "on_success"]
+    },
+    "logErrorNode": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "log_error" },
+        "default_error_code": { "type": "string", "description": "A fixed, unique code for this specific type of error (e.g., 'OTF-002')." },
+        "message_from_context_key": { "type": "string", "description": "OPTIONAL: The key in the workflow context that holds a dynamic, detailed error message from a previous step." },
+        "default_message": { "type": "string", "description": "A static, default message to log." },
+        "on_success": { "type": "string", "description": "The node to transition to after logging the error." }
+      },
+      "required": ["default_error_code", "default_message", "on_success"]
+    },
+    "conditionNode": {
+      "type": "object",
+      "properties": { "type": { "const": "condition" }, "condition_on_key": { "type": "string" }, "branches": { "type": "object", "additionalProperties": { "type": "string" } } }, "required": ["condition_on_key", "branches"]
+    },
+    "forkNode": {
+      "type": "object",
+      "properties": { "type": { "const": "fork" }, "branches": { "type": "array", "items": { "type": "string" } } }, "required": ["branches"]
+    },
+    "joinNode": {
+      "type": "object",
+      "properties": { "type": { "const": "join" }, "join_branches": { "type": "array", "items": { "type": "string" } }, "on_success": { "type": "string" } }, "required": ["join_branches", "on_success"]
+    },
+    "mapForkNode": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "map_fork" },
+        "input_list_key": { "type": "string", "description": "The context key holding the list to iterate over." },
+        "branch_key": { "type": "string", "description": "The key within each item of the list to use as a unique identifier for the branch." },
+        "branch_entry_node": { "type": "string", "description": "The name of the node where each parallel branch should begin." }
+      },
+      "required": ["input_list_key", "branch_key", "branch_entry_node"]
+    },
+    "eventWaitNode": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "event_wait" },
+        "event_key": { "type": "string", "description": "The key the orchestrator will wait for to appear in the context." },
+        "on_event": { "type": "string", "description": "The node to transition to once the event key is received." }
+      },
+      "required": ["event_key", "on_event"]
+    },
+    "endBranchNode": { "type": "object", "properties": { "type": { "const": "end_branch" } } },
+    "endNode": { "type": "object", "properties": { "type": { "const": "end" } } },
+    "scheduleParameters": {
+      "type": "object",
+      "properties": {
+        "date_context_key": {
+          "type": "string"
+        }
+      },
+      "required": ["date_context_key"]
+    }
+  }
+}

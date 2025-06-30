@@ -18,44 +18,21 @@ logger = logging.getLogger(__name__)
 
 # Initialize service as a singleton
 orchestrator_service = OrchestratorService.get_instance()
-command_parser = CommandParser()
 
 def handler(event, context):
     """
     Main Lambda entry point.
-    Processes SQS records by preparing and then invoking the appropriate workflow graph.
+    Processes SQS records by passing them to the OrchestratorService.
     """
-    return asyncio.run(main(event, context))
-
-async def main(event, context):
-    """
-    Asynchronous main logic for the Lambda handler.
-    """
+    # The OrchestratorService's process_command is synchronous,
+    # so we don't need an async main loop here anymore.
     logger.info(f"Received event: {json.dumps(event)}")
 
     for record in event['Records']:
         try:
             message_body = json.loads(record['body'])
+            orchestrator_service.process_command(message_body)
             
-            # 1. Validate the incoming command
-            if not command_parser.parse_and_validate(message_body):
-                logger.error(f"Invalid command message structure. Skipping record: {record['messageId']}")
-                continue
-
-            # 2. Prepare the graph and inputs for execution
-            graph, inputs, config = orchestrator_service.prepare_graph_for_execution(message_body)
-            
-            if not graph:
-                logger.warning(f"Could not prepare graph for message. Skipping record: {record['messageId']}")
-                continue
-
-            # 3. Invoke the graph
-            # This is a synchronous call for now. LangGraph's async invoke (`ainvoke`)
-            # is used for concurrent runs, not for running a single graph asynchronously
-            # within an async handler. The execution itself is handled by LangGraph.
-            graph.invoke(inputs, config)
-            logger.info(f"Successfully invoked graph for workflow instance: {config['configurable']['thread_id']}")
-
         except Exception:
             logger.exception(f"Error processing SQS record: {record.get('messageId', 'N/A')}")
             # For now, we'll just log and continue to the next record.

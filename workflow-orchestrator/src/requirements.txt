@@ -1,23 +1,13 @@
-# Core workflow engine
-langgraph==0.4.8
-
-# AWS SDK for Python
-boto3==1.38.32
-
-# YAML parsing for workflow definitions
-pyyaml==6.0.1
-
-# Core LangChain components for data structures
-langchain-core==0.3.64
-
-# Data validation and settings management
-pydantic==2.8.2 
-
-# JSON schema validation
-jsonschema
-
-# JSONPath parsing
-jsonpath-ng
-
+boto3>=1.34.0
+langgraph==0.4.10
+langchain-core>=0.2.0
 # Requests library
-requests 
+requests>=2.31.0
+# For schema validation
+jsonschema>=4.21.0
+# For YAML parsing
+PyYAML>=6.0
+# For JSONPath parsing
+jsonpath-ng>=1.6.0
+# For flexible date parsing
+python-dateutil>=2.8.0

@@ -8,20 +8,27 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-# Load the schema once when the module is imported.
-try:
-    # The path navigates from src/utils -> src -> workflow-orchestrator -> cch-workflow-orchestrator -> schemas
-    schema_path = Path(__file__).resolve().parent.parent.parent.parent / "schemas/generic_command.schema.json"
-    with open(schema_path) as f:
-        GENERIC_COMMAND_SCHEMA = json.load(f)
-    logger.info("Successfully loaded generic_command.schema.json")
-except FileNotFoundError:
-    logger.exception("CRITICAL: generic_command.schema.json not found. Validation will fail.")
-    GENERIC_COMMAND_SCHEMA = None
-except json.JSONDecodeError:
-    logger.exception("CRITICAL: Failed to parse generic_command.schema.json. Validation will fail.")
-    GENERIC_COMMAND_SCHEMA = None
+# --- Start of new schema loading logic ---
+def load_schema(schema_path: str):
+    """Loads a JSON schema file from the new nested directory structure."""
+    # The base path for schemas is now consistently inside the 'src' directory
+    base_path = Path(__file__).parent.parent / 'schemas' / 'json-schema'
+    full_path = base_path / schema_path
 
+    try:
+        with open(full_path) as f:
+            logger.info(f"Successfully loaded schema '{schema_path}' from: {full_path}")
+            return json.load(f)
+    except FileNotFoundError:
+        logger.critical(f"Schema '{schema_path}' not found at expected path: {full_path}. Validation will fail.")
+        return None
+    except Exception:
+        logger.exception(f"An unexpected error occurred while loading schema: {full_path}")
+        return None
+
+# Load the generic command schema from its new location
+COMMAND_SCHEMA = load_schema('command/orchestrator/generic-command.schema.json')
+# --- End of new schema loading logic ---
 
 class CommandParser:
     """A utility class for parsing, validating, and creating orchestrator commands."""
@@ -35,12 +42,12 @@ class CommandParser:
         """
         Validates a command message against the generic_command.schema.json.
         """
-        if not GENERIC_COMMAND_SCHEMA:
+        if not COMMAND_SCHEMA:
             logger.error("Validation skipped: Generic command schema is not loaded.")
             return False
 
         try:
-            validate(instance=command_message, schema=GENERIC_COMMAND_SCHEMA)
+            validate(instance=command_message, schema=COMMAND_SCHEMA)
             logger.info(f"Command with ID '{command_message.get('command', {}).get('id')}' passed validation.")
             return True
         except ValidationError as e:
@@ -73,7 +80,7 @@ class CommandParser:
         body = {
             "capability_id": self.node_config.get("capability_id"),
             "context": self._extract_keys(self.node_config.get("input_keys")),
-            "request_output_keys": self.node_config.get("output_keys"),
+            "request_output_keys": self.node_config.get("request_output_keys"),
         }
 
         return {"header": header, "body": body}
@@ -107,4 +114,14 @@ class CommandParser:
         """Extracts values from state context and data based on a list of keys."""
         if not key_list:
             return {}
-        return {key: self.state["data"].get(key) for key in key_list if key in self.state["data"]} 
+        
+        extracted = {}
+        for key in key_list:
+            if key in self.state.get("data", {}):
+                extracted[key] = self.state["data"][key]
+            elif key in self.state.get("context", {}):
+                extracted[key] = self.state["context"][key]
+            else:
+                logger.warning(f"Key '{key}' not found in state data or context during extraction.")
+        
+        return extracted 

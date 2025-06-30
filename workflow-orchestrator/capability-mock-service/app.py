@@ -4,12 +4,17 @@ import logging
 import uuid
 from datetime import datetime
 from flask import Flask, request, jsonify
-from mangum import Mangum
 import boto3
+import botocore
+import awsgi
 
 # --- Logging ---
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
+
+# Log the application version to confirm deployment
+APP_VERSION = os.environ.get('VERSION', 'unknown')
+logger.info(f"--- Mock Service starting up, Version: {APP_VERSION} ---")
 
 # --- AWS Clients ---
 sqs_client = boto3.client('sqs')
@@ -53,44 +58,38 @@ def configure_mock():
 
 @app.route('/control/reset', methods=['POST'])
 def reset_mocks():
-    # Note: A full table scan and batch delete is expensive. For testing, it's ok.
-    # A better approach for high-volume use would be to have a per-test-run partition key.
+    logger.info("Received request to reset all mock configurations.")
     if not mock_config_table:
+        logger.error("Cannot reset: Mock config table not initialized.")
         return jsonify({"error": "Mock config table not initialized"}), 500
     try:
+        logger.info(f"Scanning table: {mock_config_table.table_name}")
         scan = mock_config_table.scan()
+        items = scan.get('Items', [])
+        logger.info(f"Found {len(items)} items to delete.")
+        
+        if not items:
+            return jsonify({"message": "No mock configurations to reset."})
+
         with mock_config_table.batch_writer() as batch:
-            for each in scan['Items']:
+            for each in items:
                 batch.delete_item(Key={'capability_id': each['capability_id']})
+        
         msg = "All mock configurations have been reset."
         logger.info(msg)
         return jsonify({"message": msg})
+    except botocore.exceptions.ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code")
+        error_message = e.response.get("Error", {}).get("Message")
+        logger.error(f"AWS ClientError on reset: {error_code} - {error_message}", exc_info=True)
+        return jsonify({
+            "error": "AWSClientError",
+            "code": error_code,
+            "message": error_message
+        }), 500
     except Exception as e:
-        logger.error(f"Error in /control/reset: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
-
-# --- Mangum Handler for Flask ---
-mangum_handler = Mangum(app)
-
-# --- Main Lambda Handler ---
-def handler(event, context):
-    """
-    Main Lambda handler that routes events based on their source.
-    - API Gateway events are routed to the Flask app (via Mangum).
-    - SQS events are processed to simulate capability responses.
-    """
-    if 'requestContext' in event and 'http' in event['requestContext']:
-        # It's an HTTP event from API Gateway
-        logger.info("Routing event to HTTP handler (Mangum/Flask)")
-        return mangum_handler(event, context)
-    
-    if 'Records' in event and event['Records'][0]['eventSource'] == 'aws:sqs':
-        # It's an SQS event
-        logger.info("Routing event to SQS handler")
-        return handle_sqs_event(event, context)
-
-    logger.warning(f"Unknown event type received: {event}")
-    return {"statusCode": 400, "body": "Unknown event type"}
+        logger.error(f"An unexpected error occurred during reset: {e}", exc_info=True)
+        return jsonify({"error": "UnexpectedError", "message": str(e)}), 500
 
 # --- SQS Event Processing Logic ---
 def handle_sqs_event(event, context):
@@ -100,14 +99,14 @@ def handle_sqs_event(event, context):
     if not ORCHESTRATOR_COMMAND_QUEUE_URL or not mock_config_table:
         logger.error("Required environment variables for SQS handling are not set.")
         return
-        
+
     for record in event['Records']:
         try:
             message_body = json.loads(record['body'])
             command = message_body.get('command', {})
             payload = command.get('payload', {})
             capability_id = payload.get('capability_id')
-            
+
             if not capability_id:
                 logger.error("Missing 'capability_id' in SQS message payload.")
                 continue
@@ -146,3 +145,23 @@ def handle_sqs_event(event, context):
             logger.error(f"Error processing SQS record: {e}", exc_info=True)
             continue
     return {"statusCode": 200, "body": "SQS records processed."}
+
+
+# --- Main Lambda Handler ---
+def handler(event, context):
+    """
+    Main Lambda handler that routes events based on their source.
+    - API Gateway events are routed to the Flask app (via awsgi).
+    - SQS events are processed to simulate capability responses.
+    """
+    # Check for an API Gateway event and route to Flask
+    if 'httpMethod' in event:
+        return awsgi.response(app, event, context)
+    
+    # Check for an SQS event and process accordingly
+    if 'Records' in event and event['Records'][0]['eventSource'] == 'aws:sqs':
+        logger.info("Routing event to SQS handler")
+        return handle_sqs_event(event, context)
+
+    logger.warning(f"Unknown event type received: {event}")
+    return {"statusCode": 400, "body": "Unknown event type"}
