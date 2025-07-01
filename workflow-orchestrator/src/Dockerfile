@@ -1,25 +1,9 @@
-FROM artifactory.nike.com:9002/fci/nike-debian-slim-python3-foundation:12.2.0-439
+FROM public.ecr.aws/lambda/python:3.12
 
-WORKDIR /app
+COPY requirements.txt ${LAMBDA_TASK_ROOT}
 
-USER root
+RUN pip install --no-cache-dir -r requirements.txt
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        python3-venv && \
-    rm -rf /var/lib/apt/lists/* && \
-    usermod -u 639 docker && \
-    groupmod -g 639 docker && \
-    chown -R docker:docker /app
+COPY . ${LAMBDA_TASK_ROOT}
 
-USER docker
-
-COPY requirements.txt .
-
-RUN python3 -m venv /app/venv && \
-    . venv/bin/activate && \
-    pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-CMD ["python"]
+CMD [ "app.handler" ]
