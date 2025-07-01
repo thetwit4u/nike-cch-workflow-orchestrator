@@ -1,6 +1,7 @@
 # Cursor
+.cursor/*
 .cursor/
-.cursor-history/
+*.code-workspace
 refprojects/
 docs/
 
