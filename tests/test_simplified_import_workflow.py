@@ -54,6 +54,7 @@ def test_simplified_workflow_happy_path(aws_client, cdk_outputs, stack_name, wor
             "source": "Pytest-HappyPath",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "payload": {
+                "deliverySetId": str(uuid.uuid4()),
                 "deliverySetURI": happy_path_s3_uri,
                 "filingpackCreationStarted": False,
                 "_no_cache": True
@@ -107,6 +108,7 @@ def test_simplified_workflow_s3_error_path(aws_client, cdk_outputs, stack_name, 
             "source": "Pytest-ErrorPath",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "payload": {
+                "deliverySetId": str(uuid.uuid4()),
                 "deliverySetURI": non_existent_s3_uri,
                 "filingpackCreationStarted": False,
                 "_no_cache": True

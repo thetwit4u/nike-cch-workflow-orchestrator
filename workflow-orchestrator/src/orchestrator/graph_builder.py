@@ -109,7 +109,8 @@ class GraphBuilder:
             if 'on_success' in node_data:
                 self.workflow.add_edge(node_name, node_data['on_success'])
             
-            if 'on_response' in node_data:
+            # The 'on_response' edge for async nodes is handled by the orchestrator service, not the graph itself.
+            if 'on_response' in node_data and node_data.get('type') not in ['async_request', 'scheduled_request']:
                 self.workflow.add_edge(node_name, node_data['on_response'])
             
             if 'next' in node_data:
@@ -274,54 +275,14 @@ class GraphBuilder:
         library_call = node_data.get('library_function_id')
         capability_call = node_data.get('capability_id')
 
-        # Add a specific action for the 'end' node to set the completed status
+        # --- Core Node Types ---
         if node_type == 'end':
             return partial(core_nodes.set_state_node_wrapper,
                            node_config={'static_outputs': {'status': 'COMPLETED'}},
                            node_name=node_name)
 
-        # Generic handlers for simple node types
         if node_type in ['entry', 'fork', 'join', 'condition', 'map_fork', 'event_wait', 'end_branch']:
-             return lambda state: state
-        
-        # Handler for core library functions
-        if library_call:
-            if library_call not in library_handler_map:
-                raise ValueError(f"Unknown library function ID: {library_call}")
-            handler = library_handler_map[library_call]
-            # The specific library handlers expect the full state and config
-            return partial(handler, node_config=node_data, node_name=node_name)
-        
-        # Handler for capability nodes that can interrupt execution (async)
-        if node_type in ['async_request', 'scheduled_request']:
-            if not capability_call:
-                raise ValueError(f"Node '{node_name}' of type '{node_type}' must have a 'capability_id'.")
-            
-            handler = capability_nodes.capability_handler_map.get(capability_call)
-            if not handler:
-                raise ValueError(f"No handler found for capability ID '{capability_call}' in node '{node_name}'.")
-            
-            return partial(core_nodes.capability_node_wrapper, handler=handler, node_config=node_data, node_name=node_name)
-        
-        # Handler for capability nodes that run synchronously
-        if node_type == 'sync_call':
-            if not capability_call:
-                raise ValueError(f"Node '{node_name}' of type 'sync_call' must have a 'capability_id'.")
-
-            handler = capability_nodes.capability_handler_map.get(capability_call)
-            if not handler:
-                raise ValueError(f"No handler found for capability ID '{capability_call}' in node '{node_name}'.")
-
-            # This needs a different wrapper that doesn't handle Interrupt
-            return partial(core_nodes.sync_capability_node_wrapper, handler=handler, node_config=node_data, node_name=node_name)
-
-        # Fallback for other capability-based nodes if not explicitly handled above
-        if capability_call:
-            handler = capability_nodes.capability_handler_map.get(capability_call)
-            if not handler:
-                raise ValueError(f"No handler found for capability ID '{capability_call}' in node '{node_name}'.")
-            # Default to the interrupting wrapper for safety
-            return partial(core_nodes.capability_node_wrapper, handler=handler, node_config=node_data, node_name=node_name)
+             return lambda state: state # These are routing/structural nodes
 
         if node_type == 'log_error':
             return partial(core_nodes.handle_log_error, node_config=node_data, node_name=node_name)
@@ -329,7 +290,30 @@ class GraphBuilder:
         if node_type == 'set_state':
             return partial(core_nodes.set_state_node_wrapper, node_config=node_data, node_name=node_name)
 
-        # Fallback for unhandled node types
+        # --- Library Call Node ---
+        if library_call:
+            if library_call not in library_handler_map:
+                raise ValueError(f"Unknown library function ID: {library_call}")
+            handler = library_handler_map[library_call]
+            return partial(handler, node_config=node_data, node_name=node_name)
+        
+        # --- Capability Node Types ---
+        if node_type == 'async_request':
+            if not capability_call:
+                raise ValueError(f"Node '{node_name}' of type 'async_request' must have a 'capability_id'.")
+            return partial(capability_nodes.handle_async_request, node_config=node_data, node_name=node_name)
+
+        if node_type == 'scheduled_request':
+            if not capability_call:
+                raise ValueError(f"Node '{node_name}' of type 'scheduled_request' must have a 'capability_id'.")
+            return partial(capability_nodes.handle_scheduled_request, node_config=node_data, node_name=node_name)
+        
+        if node_type == 'sync_call':
+            if not capability_call:
+                raise ValueError(f"Node '{node_name}' of type 'sync_call' must have a 'capability_id'.")
+            return partial(capability_nodes.handle_sync_call, node_config=node_data, node_name=node_name)
+
+        # --- Fallback for unhandled node types ---
         logger.warning(f"No specific action found for node '{node_name}' of type '{node_type}'. It will be treated as a pass-through node.")
         
         def unhandled_node_action(state):

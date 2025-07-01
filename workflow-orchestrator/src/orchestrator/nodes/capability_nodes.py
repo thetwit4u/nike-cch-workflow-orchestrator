@@ -114,13 +114,16 @@ def handle_async_request(state: WorkflowState, node_config: dict, node_name: str
 
         logger.info(f"Successfully sent async request for capability '{capability_id}'. Pausing for response.")
         
-        # We must interrupt execution here to wait for the async response
-        return interrupt()
+        # LangGraph will handle saving the state. The graph run will end here,
+        # and execution will resume when a response is received.
+        # interrupt() # This was an incorrect usage of the langgraph interrupt
 
     except Exception as e:
-        logger.error(f"Error in 'async_request' node '{node_name}': {e}")
+        # Log the error and update the state
+        error_message = f"Error in 'async_request' node '{node_name}': {e}"
+        logger.error(error_message)
         state["is_error"] = True
-        state["error_details"] = {"error": str(e), "node": node_name}
+        state["error_details"] = {"error": error_message, "node": node_name}
     return state
 
 
