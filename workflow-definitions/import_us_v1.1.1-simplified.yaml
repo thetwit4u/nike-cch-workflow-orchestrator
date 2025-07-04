@@ -1,17 +1,17 @@
 schema_version: "1.1.2"
 workflow_name: "Simplified Import US Workflow"
 workflow_id: "import_us_v1_simplified"
-entry_point: Enrich_Delivery_Set
+entry_point: Create_Filing_Packs
 
 initial_context:
   - deliverySetId
   - deliverySetURI
 
 nodes:
-  Enrich_Delivery_Set:
+  Create_Filing_Packs:
     type: async_request
-    title: "Enrich Delivery Set"
-    capability_id: "import#enrich_deliveryset"
+    title: "Create Filing Packs with Enrichment"
+    capability_id: "import#create_filingpacks"
     input_keys:
       - "deliverySetId"
       - "deliverySetURI"
@@ -20,17 +20,6 @@ nodes:
       - "deliverySetImportEnrichedURI"
       - "deliverySetImportEnrichedStatus"
       - "deliverySetImportEnrichedError"
-    on_response: Create_Filing_Packs
-    on_failure: Handle_Error
-
-  Create_Filing_Packs:
-    type: async_request
-    title: "Create Filing Packs"
-    capability_id: "import#create_filingpacks"
-    input_keys:
-      - "deliverySetImportEnrichedId"
-      - "deliverySetImportEnrichedURI"
-    request_output_keys:
       - "filingPacksStatus"
       - "filingPacksError"
       - "importFilingPacks"
