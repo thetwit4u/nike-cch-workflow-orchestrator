@@ -1,0 +1,119 @@
+schema_version: "1.1.2"
+workflow_name: "Fork Join Parallel Processing"
+workflow_id: "fork_join_parallel"
+entry_point: Initialize_Parallel_Work
+
+initial_context: []
+
+nodes:
+  Initialize_Parallel_Work:
+    type: set_state
+    title: "Initialize Parallel Processing"
+    static_outputs:
+      total_tasks: 3
+      started_at: "2024-01-01T10:00:00Z"
+      parallel_processing: true
+    on_success: Start_Parallel_Tasks
+
+  Start_Parallel_Tasks:
+    type: fork
+    title: "Start Parallel Task Processing"
+    branches:
+      - Data_Validation_Task
+      - Data_Enrichment_Task
+      - Data_Transformation_Task
+
+  # Parallel Task Branch 1
+  Data_Validation_Task:
+    type: set_state
+    title: "Data Validation Task"
+    static_outputs:
+      validation_status: "completed"
+      validation_errors: 0
+      validation_duration: "2 minutes"
+      records_validated: 1000
+    on_success: Join_Parallel_Tasks
+
+  # Parallel Task Branch 2  
+  Data_Enrichment_Task:
+    type: set_state
+    title: "Data Enrichment Task"
+    static_outputs:
+      enrichment_status: "completed"
+      enrichment_sources: 3
+      enrichment_duration: "5 minutes"
+      records_enriched: 1000
+    on_success: Join_Parallel_Tasks
+
+  # Parallel Task Branch 3
+  Data_Transformation_Task:
+    type: set_state
+    title: "Data Transformation Task"
+    static_outputs:
+      transformation_status: "completed"
+      transformation_rules: 15
+      transformation_duration: "3 minutes"
+      records_transformed: 1000
+    on_success: Join_Parallel_Tasks
+
+  Join_Parallel_Tasks:
+    type: join
+    title: "Join All Parallel Tasks"
+    join_branches:
+      - Data_Validation_Task
+      - Data_Enrichment_Task
+      - Data_Transformation_Task
+    on_success: Consolidate_Results
+
+  Consolidate_Results:
+    type: set_state
+    title: "Consolidate Processing Results"
+    static_outputs:
+      consolidation_status: "completed"
+      total_processing_time: "5 minutes"
+      all_tasks_successful: true
+      final_record_count: 1000
+    on_success: Start_Sequential_Processing
+
+  # Example of sequential processing after parallel
+  Start_Sequential_Processing:
+    type: fork
+    title: "Start Sequential Processing Chain"
+    branches:
+      - Quality_Check_Chain
+
+  Quality_Check_Chain:
+    type: set_state
+    title: "Quality Check Phase 1"
+    static_outputs:
+      quality_check_1: "passed"
+      quality_score: 95
+    on_success: Quality_Check_Phase_2
+
+  Quality_Check_Phase_2:
+    type: set_state
+    title: "Quality Check Phase 2"
+    static_outputs:
+      quality_check_2: "passed"
+      final_quality_score: 98
+    on_success: Join_Sequential_Processing
+
+  Join_Sequential_Processing:
+    type: join
+    title: "Join Sequential Processing"
+    join_branches:
+      - Quality_Check_Chain
+    on_success: Finalize_Processing
+
+  Finalize_Processing:
+    type: set_state
+    title: "Finalize All Processing"
+    static_outputs:
+      processing_complete: true
+      completion_time: "2024-01-01T10:15:00Z"
+      success_rate: 100
+    on_success: End_Workflow
+
+  End_Workflow:
+    type: end
+    title: "Parallel Processing Complete"

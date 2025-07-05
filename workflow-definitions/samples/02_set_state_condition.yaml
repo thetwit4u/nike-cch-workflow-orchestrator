@@ -1,0 +1,91 @@
+schema_version: "1.1.2"
+workflow_name: "Set State and Condition Workflow"
+workflow_id: "set_state_condition"
+entry_point: Initialize_Data
+
+initial_context: []
+
+nodes:
+  Initialize_Data:
+    type: set_state
+    title: "Initialize Workflow Data"
+    static_outputs:
+      processing_mode: "automatic"
+      priority: "high"
+      item_count: 5
+      processing_enabled: true
+    on_success: Check_Processing_Mode
+
+  Check_Processing_Mode:
+    type: condition
+    title: "Check Processing Mode"
+    condition_on_key: "processing_mode"
+    branches:
+      "automatic": Auto_Processing_Path
+      "manual": Manual_Processing_Path
+      "_default": Default_Processing_Path
+
+  Auto_Processing_Path:
+    type: set_state
+    title: "Automatic Processing"
+    static_outputs:
+      processing_type: "automated"
+      estimated_duration: "5 minutes"
+    on_success: Check_Priority
+
+  Manual_Processing_Path:
+    type: set_state
+    title: "Manual Processing"
+    static_outputs:
+      processing_type: "manual"
+      estimated_duration: "30 minutes"
+    on_success: Check_Priority
+
+  Default_Processing_Path:
+    type: set_state
+    title: "Default Processing"
+    static_outputs:
+      processing_type: "default"
+      estimated_duration: "15 minutes"
+    on_success: Check_Priority
+
+  Check_Priority:
+    type: condition
+    title: "Check Priority Level"
+    condition_on_key: "priority"
+    branches:
+      "high": High_Priority_Processing
+      "medium": Medium_Priority_Processing
+      "low": Low_Priority_Processing
+      "_default": Medium_Priority_Processing
+
+  High_Priority_Processing:
+    type: set_state
+    title: "High Priority Processing"
+    static_outputs:
+      queue_position: 1
+      sla_hours: 2
+      notification_required: true
+    on_success: End_Workflow
+
+  Medium_Priority_Processing:
+    type: set_state
+    title: "Medium Priority Processing"
+    static_outputs:
+      queue_position: 5
+      sla_hours: 8
+      notification_required: false
+    on_success: End_Workflow
+
+  Low_Priority_Processing:
+    type: set_state
+    title: "Low Priority Processing"
+    static_outputs:
+      queue_position: 10
+      sla_hours: 24
+      notification_required: false
+    on_success: End_Workflow
+
+  End_Workflow:
+    type: end
+    title: "Workflow Completion"

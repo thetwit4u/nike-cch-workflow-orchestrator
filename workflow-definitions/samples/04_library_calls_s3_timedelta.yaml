@@ -1,0 +1,165 @@
+schema_version: "1.1.2"
+workflow_name: "Library Calls S3 and Time Operations"
+workflow_id: "library_calls_s3_timedelta"
+entry_point: Read_Configuration
+
+initial_context:
+  - configURI
+  - dataURI
+
+nodes:
+  Read_Configuration:
+    type: library_call
+    title: "Read Configuration from S3"
+    library_function_id: "s3#read_jsonpath"
+    parameters:
+      input_s3_uri_key: "configURI"
+      jsonpath_expression: "$.config.processing_enabled"
+    output_key: "processing_enabled"
+    on_success: Check_Processing_Enabled
+    on_failure: Handle_Config_Error
+
+  Check_Processing_Enabled:
+    type: condition
+    title: "Check if Processing is Enabled"
+    condition_on_key: "processing_enabled"
+    branches:
+      "true": Read_Planned_Date
+      "false": Skip_Processing
+      "_default": Handle_Config_Error
+
+  Read_Planned_Date:
+    type: library_call
+    title: "Read Planned Processing Date"
+    library_function_id: "s3#read_jsonpath"
+    parameters:
+      input_s3_uri_key: "dataURI"
+      jsonpath_expression: "$.scheduling.planned_date"
+    output_key: "planned_date"
+    on_success: Calculate_Start_Date
+    on_failure: Handle_Data_Error
+
+  Calculate_Start_Date:
+    type: library_call
+    title: "Calculate Processing Start Date"
+    library_function_id: "core#calculate_timedelta"
+    parameters:
+      date_context_key: "planned_date"
+      timedelta:
+        days: -3
+        hours: -2
+    output_key: "start_date"
+    on_success: Calculate_End_Date
+    on_failure: Handle_Calculation_Error
+
+  Calculate_End_Date:
+    type: library_call
+    title: "Calculate Processing End Date"
+    library_function_id: "core#calculate_timedelta"
+    parameters:
+      date_context_key: "start_date"
+      timedelta:
+        days: 1
+        hours: 8
+    output_key: "end_date"
+    on_success: Read_Additional_Config
+    on_failure: Handle_Calculation_Error
+
+  Read_Additional_Config:
+    type: library_call
+    title: "Read Additional Configuration"
+    library_function_id: "s3#read_jsonpath"
+    parameters:
+      input_s3_uri_key: "configURI"
+      jsonpath_expression: "$.config.notification_settings"
+    output_key: "notification_settings"
+    on_success: Read_Workflow_Metadata
+    on_failure: Handle_Config_Error
+
+  Read_Workflow_Metadata:
+    type: library_call
+    title: "Read Workflow Metadata"
+    library_function_id: "s3#read_jsonpath"
+    parameters:
+      input_s3_uri_key: "dataURI"
+      jsonpath_expression: "$.metadata"
+    output_key: "workflow_metadata"
+    on_success: Calculate_Buffer_Time
+    on_failure: Handle_Data_Error
+
+  Calculate_Buffer_Time:
+    type: library_call
+    title: "Calculate Buffer Time"
+    library_function_id: "core#calculate_timedelta"
+    parameters:
+      date_context_key: "end_date"
+      timedelta:
+        hours: 4
+        minutes: 30
+    output_key: "buffer_end_time"
+    on_success: Finalize_Schedule
+    on_failure: Handle_Calculation_Error
+
+  Finalize_Schedule:
+    type: set_state
+    title: "Finalize Processing Schedule"
+    static_outputs:
+      schedule_finalized: true
+      schedule_status: "confirmed"
+      total_processing_duration: "33 hours 30 minutes"
+    on_success: End_Workflow
+
+  Skip_Processing:
+    type: set_state
+    title: "Skip Processing - Disabled"
+    static_outputs:
+      processing_skipped: true
+      skip_reason: "processing_disabled_in_config"
+    on_success: End_Workflow
+
+  # Error Handling Nodes
+  Handle_Config_Error:
+    type: log_error
+    title: "Handle Configuration Error"
+    default_error_code: "CONFIG-001"
+    message_from_context_key: "_internalError"
+    default_message: "Failed to read or parse configuration from S3"
+    on_success: Set_Default_Config
+
+  Handle_Data_Error:
+    type: log_error
+    title: "Handle Data Reading Error"
+    default_error_code: "DATA-001"
+    message_from_context_key: "_internalError"
+    default_message: "Failed to read or parse data from S3"
+    on_success: Set_Default_Schedule
+
+  Handle_Calculation_Error:
+    type: log_error
+    title: "Handle Time Calculation Error"
+    default_error_code: "CALC-001"
+    message_from_context_key: "_internalError"
+    default_message: "Failed to calculate time values"
+    on_success: Set_Default_Schedule
+
+  Set_Default_Config:
+    type: set_state
+    title: "Set Default Configuration"
+    static_outputs:
+      processing_enabled: false
+      notification_settings: "default"
+      config_source: "default_fallback"
+    on_success: End_Workflow
+
+  Set_Default_Schedule:
+    type: set_state
+    title: "Set Default Schedule"
+    static_outputs:
+      start_date: "2024-01-01T00:00:00Z"
+      end_date: "2024-01-02T00:00:00Z"
+      schedule_source: "default_fallback"
+    on_success: End_Workflow
+
+  End_Workflow:
+    type: end
+    title: "Library Operations Complete"
