@@ -47,7 +47,7 @@ These variables are:
 
 ### 2. Auto-Created Mock Queue for Development
 
-In development environments (`env=dev`), a mock capability queue is automatically created:
+In development environments (`env=st`), a mock capability queue is automatically created:
 
 ```
 cch-flow-orchestrator-mock-capability-queue-dev-USERNAME

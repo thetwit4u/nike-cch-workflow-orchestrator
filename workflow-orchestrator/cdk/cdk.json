@@ -17,8 +17,6 @@
     ]
   },
   "context": {
-    "owner": "",
-    "env": "dev",
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
     "@aws-cdk/core:checkSecretUsage": true,
     "@aws-cdk/core:target-partitions": [

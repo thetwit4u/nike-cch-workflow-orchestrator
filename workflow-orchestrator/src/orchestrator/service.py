@@ -90,48 +90,75 @@ class OrchestratorService:
             graph = self._get_or_compile_graph(workflow_uri, command)
             config = {"configurable": {"thread_id": instance_id}}
             
-            # Distinguish between starting a new workflow and updating an existing one.
-            current_state = graph.get_state(config)
-
             if command_type == 'EVENT':
-                payload = command.get('payload', {})
+                # Execute idempotency check (The Guard Clause)
+                checkpoint_config = {"configurable": {"thread_id": instance_id}}
                 
-                # Check if the state has any persisted values. If not, it's a new workflow.
-                if not current_state.values:
-                    # --- This is a NEW workflow ---
-                    adapter.info("No existing state found. Starting new workflow.")
+                # Check for existing checkpoint using the correct method `get()`
+                checkpoint = self.state_saver.get(checkpoint_config)
+                
+                if checkpoint is None:
+                    # Case A: No Checkpoint Found - New workflow
+                    adapter.info("No existing checkpoint found. Starting new workflow.", 
+                               extra={'workflowInstanceId': instance_id})
+                    
+                    payload = command.get('payload', {})
                     initial_context = {
                         "correlationId": command_message.get("correlationId"),
                         "workflowInstanceId": instance_id,
                         "workflow_definition_uri": workflow_uri,
                     }
-                    # For a new workflow, the first invoke call creates the initial state and runs the graph.
                     initial_state_patch = {"context": initial_context, "data": payload}
                     adapter.info("Invoking graph with initial state to run to completion...")
                     final_state = graph.invoke(initial_state_patch, config)
                     adapter.info(f"Successfully ran workflow. Final state: {final_state}")
-                
+                    
                 else:
-                    # --- This is an UPDATE to an existing workflow ---
-                    # First, check if the workflow is past the point of no return.
-                    if current_state.values.get("data", {}).get("filingpackCreationStarted"):
-                        adapter.warning(f"Ignoring EVENT update because filing pack creation has already started.")
-                        return # Do nothing
+                    # Case B: Checkpoint Found - Check if workflow has progressed
+                    # Get next nodes from the '__next__' channel in channel_values
+                    next_nodes = checkpoint.get('channel_values', {}).get('__next__')
 
-                    adapter.info("Existing state found. Updating and resuming workflow with new payload.")
-                    # Add a flag to signal that this is a user-initiated update,
-                    # which will cause the graph to loop back and recalculate.
-                    payload['_user_update_request'] = True
-                    # Merge the new payload into the existing state's data.
-                    # The `WorkflowState` reducer for 'data' will handle the update.
-                    graph.update_state(config, {"data": payload})
-                    # Re-invoke the graph. If it was paused at a scheduled node, this will
-                    # cause it to re-evaluate and create a new schedule with the updated data.
-                    adapter.info("Re-invoking graph to run to completion...")
-                    final_state = graph.invoke(None, config)
-                    adapter.info(f"Successfully updated and resumed workflow. Final state: {final_state}")
+                    # Get start node from workflow definition
+                    workflow_definition = self.s3_client.get_workflow_definition(workflow_uri)
+                    entry_point = workflow_definition.get('entry_point')
+                    
+                    if not entry_point:
+                        adapter.error("Workflow definition missing entry_point field.")
+                        return
+
+                    is_at_start_node = False
+                    # Case 1: Workflow initialized but hasn't run, so __next__ is not populated yet.
+                    if next_nodes is None:
+                        is_at_start_node = True
+                    # Case 2: Workflow is set to run the entry_point next (as a string).
+                    elif isinstance(next_nodes, str) and next_nodes == entry_point:
+                        is_at_start_node = True
+                    # Case 3: Workflow is set to run the entry_point next (as a list/tuple).
+                    elif isinstance(next_nodes, (list, tuple)) and len(next_nodes) == 1 and next_nodes[0] == entry_point:
+                        is_at_start_node = True
+
+                    if is_at_start_node:
+                        # Sub-Case B1: Workflow is at the Start - Allow update
+                        adapter.info("Update event received for pending workflow. Proceeding with new data.", 
+                                   extra={'workflowInstanceId': instance_id, 'currentState': str(next_nodes)})
+                        
+                        payload = command.get('payload', {})
+                        # Add flag to signal user-initiated update
+                        payload['_user_update_request'] = True
+                        # Update the state with new payload
+                        graph.update_state(config, {"data": payload})
+                        adapter.info("Re-invoking graph to run to completion...")
+                        final_state = graph.invoke(None, config)
+                        adapter.info(f"Successfully updated and resumed workflow. Final state: {final_state}")
+                        
+                    else:
+                        # Sub-Case B2: Workflow has Progressed - Ignore duplicate
+                        adapter.info("Duplicate trigger event received for in-progress workflow. Ignoring.", 
+                                   extra={'workflowInstanceId': instance_id, 'currentState': str(next_nodes)})
+                        return  # Exit gracefully without invoking graph
 
             elif command_type == 'ASYNC_RESP':
+                payload = command.get('payload', {})
                 routing_hint = command.get('routingHint')
                 thread_id = instance_id
 
@@ -152,11 +179,53 @@ class OrchestratorService:
                     graph.update_state(resume_config, {"context": payload, "data": payload})
                     graph.invoke(None, resume_config)
                     adapter.info(f"Successfully resumed workflow on thread '{thread_id}'.")
+                else:
+                    # Handle non-branched async responses
+                    adapter.info(f"Processing ASYNC_RESP for main thread '{instance_id}'.")
+                    
+                    # --- NEW LOGIC TO PREVENT RE-RUNNING THE ASYNC NODE ---
+                    # 1. Get current state to find out which node was interrupted
+                    current_state = graph.get_state(config)
+                    interrupted_node = None
+                    
+                    # The 'next' attribute holds the name(s) of the interrupted node(s).
+                    if current_state.next:
+                        # It's a tuple, we'll take the first one. It might have a UID suffix.
+                        interrupted_node_full_ns = current_state.next[0]
+                        interrupted_node = interrupted_node_full_ns.split(':')[0]
+
+                    if not interrupted_node:
+                        adapter.error("Could not determine interrupted node from state. Cannot proceed with ASYNC_RESP.")
+                        return
+
+                    adapter.info(f"Workflow was interrupted at node: {interrupted_node}")
+
+                    # 2. Get the workflow definition to find the on_response node
+                    workflow_definition = self.s3_client.get_workflow_definition(workflow_uri)
+                    node_def = workflow_definition.get("nodes", {}).get(interrupted_node)
+
+                    if not node_def:
+                        adapter.error(f"Could not find definition for interrupted node '{interrupted_node}' in workflow.")
+                        return
+
+                    on_response_node = node_def.get("on_response")
+                    if not on_response_node:
+                        adapter.error(f"Node '{interrupted_node}' is missing 'on_response' transition target.")
+                        return
+                    
+                    adapter.info(f"Transitioning to '{on_response_node}' as per 'on_response' directive.")
+                    
+                    # 3. Update state with payload and tell the graph which node to run next.
+                    graph.update_state(config, {"data": payload}, as_node=on_response_node)
+                    
+                    final_state = graph.invoke(None, config)
+                    adapter.info(f"Successfully resumed and ran workflow to completion. Final state: {final_state}")
 
             elif command_type == 'EXECUTE_SCHEDULED_TASK':
                 # This command is sent by the scheduler. Its purpose is to update the state
                 # with a payload that was defined when the schedule was created.
                 # This state update will, in turn, trigger the next step in the graph.
+                payload = command.get('payload', {})
                 state_update = payload.get('state_update', {})
                 
                 if state_update:

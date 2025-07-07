@@ -2,7 +2,7 @@ import json
 import os
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 import boto3
 import botocore
@@ -103,12 +103,17 @@ def handle_sqs_event(event, context):
     for record in event['Records']:
         try:
             message_body = json.loads(record['body'])
+            logger.info(f"Received message body: {json.dumps(message_body, indent=2)}") # Added for debugging
+
+            # Correctly parse the nested command structure from the orchestrator
             command = message_body.get('command', {})
-            payload = command.get('payload', {})
-            capability_id = payload.get('capability_id')
+            # The orchestrator sends the main data in 'body', not 'payload'
+            command_body = command.get('body', {}) 
+            capability_id = command_body.get('capability_id')
+            context = command_body.get('context', {})
 
             if not capability_id:
-                logger.error("Missing 'capability_id' in SQS message payload.")
+                logger.error("Missing 'capability_id' in command body.")
                 continue
 
             logger.info(f"Processing SQS request for capability '{capability_id}'")
@@ -116,13 +121,41 @@ def handle_sqs_event(event, context):
             # Get mock configuration from DynamoDB
             response_config = mock_config_table.get_item(Key={'capability_id': capability_id}).get('Item')
             
-            if not response_config:
-                response_payload = {"error": "No mock configured for this capability"}
-            else:
+            response_payload = {}
+            if response_config:
+                # Use the configured response if it exists
                 response_payload = response_config.get("response_data", {})
+                logger.info(f"Found configured mock for '{capability_id}'.")
+            else:
+                # --- ADDED: Default logic for unconfigured capabilities ---
+                logger.info(f"No mock configured for '{capability_id}'. Using default logic.")
+                if capability_id == "import#enrich_deliveryset":
+                    response_payload = {
+                        "deliverySetImportEnrichedId": context.get("deliverySetId", str(uuid.uuid4())),
+                        "deliverySetImportEnrichedURI": context.get("deliverySetURI", "").replace(".json", "-enriched.json"),
+                        "deliverySetImportEnrichedStatus": "ENRICHED",
+                        "deliverySetImportEnrichedError": None
+                    }
+                elif capability_id == "import#create_filingpacks":
+                    # This is the merged capability for the simplified workflow.
+                    # It needs to return both enrichment and filing pack data.
+                    response_payload = {
+                        "deliverySetImportEnrichedId": context.get("deliverySetId", str(uuid.uuid4())),
+                        "deliverySetImportEnrichedURI": context.get("deliverySetURI", "").replace(".json", "-enriched.json"),
+                        "deliverySetImportEnrichedStatus": "SUCCESS",
+                        "importFilingPacksStatus": "SUCCESS",
+                        "importFilingPacksError": None,
+                        "importFilingPacks": [
+                            {"filingPackId": str(uuid.uuid4()), "status": "PENDING"},
+                            {"filingPackId": str(uuid.uuid4()), "status": "PENDING"}
+                        ]
+                    }
+                else:
+                    response_payload = {"error": "No mock configured for this capability"}
 
-            # Construct the response command to send back to the orchestrator
-            response_message = {
+
+            # Construct the response message to send back to the orchestrator
+            response_command = {
                 "workflowInstanceId": message_body.get("workflowInstanceId"),
                 "correlationId": message_body.get("correlationId"),
                 "workflowDefinitionURI": message_body.get("workflowDefinitionURI"),
@@ -130,15 +163,15 @@ def handle_sqs_event(event, context):
                     "type": "ASYNC_RESP",
                     "id": f"resp-cmd-mock-{uuid.uuid4()}",
                     "source": f"Capability:{capability_id}",
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
-                    "payload": response_payload
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "payload": response_payload,
                 }
             }
 
-            logger.info(f"Sending response to '{ORCHESTRATOR_COMMAND_QUEUE_URL}': {json.dumps(response_message)}")
+            logger.info(f"Sending response to '{ORCHESTRATOR_COMMAND_QUEUE_URL}': {json.dumps(response_command)}")
             sqs_client.send_message(
                 QueueUrl=ORCHESTRATOR_COMMAND_QUEUE_URL,
-                MessageBody=json.dumps(response_message)
+                MessageBody=json.dumps(response_command)
             )
 
         except Exception as e:

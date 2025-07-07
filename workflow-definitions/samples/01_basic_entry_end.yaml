@@ -1,0 +1,16 @@
+schema_version: "1.1.2"
+workflow_name: "Basic Entry End Workflow"
+workflow_id: "basic_entry_end"
+entry_point: Start
+
+initial_context: []
+
+nodes:
+  Start:
+    type: entry
+    title: "Workflow Entry Point"
+    next: End_Workflow
+
+  End_Workflow:
+    type: end
+    title: "Workflow Completion"

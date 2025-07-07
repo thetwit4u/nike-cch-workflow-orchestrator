@@ -32,7 +32,7 @@ set +a  # Turn off auto-export
 # Debug output
 echo "Loaded environment variables from $ENV_FILE:"
 echo "CCH_OWNER=${CCH_OWNER}"
-echo "CDK_ENV=${CDK_ENV}"
+echo "ENVIRONMENT=${ENVIRONMENT}"
 
 # Run the CDK command with the rest of the arguments
 echo "Running: npx cdk $@"

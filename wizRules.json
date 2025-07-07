@@ -1,0 +1,64 @@
+{
+  "rules": [
+    {
+      "displayName": "Compliance Failures: Critical",
+      "metricKey": "results.complianceDistribution.critical",
+      "value": 90,
+      "comparator": "LTE"
+    },
+    {
+      "displayName": "Compliance Failures: High",
+      "metricKey": "results.complianceDistribution.high",
+      "value": 90,
+      "comparator": "LTE"
+    },
+    {
+      "displayName": "Compliance Failures: Medium",
+      "metricKey": "results.complianceDistribution.medium",
+      "value": 90,
+      "comparator": "LTE"
+    },
+    {
+      "displayName": "Compliance Failures: Low",
+      "metricKey": "results.complianceDistribution.low",
+      "value": 90,
+      "comparator": "LTE"
+    },
+    {
+      "displayName": "Compliance Failures: Total",
+      "metricKey": "results.complianceDistribution.total",
+      "value": 90,
+      "comparator": "LTE"
+    },
+    {
+      "displayName": "Vulnerability Failures: Critical",
+      "metricKey": "results.vulnerabilityDistribution.critical",
+      "value": 90,
+      "comparator": "LTE"
+    },
+    {
+      "displayName": "Vulnerability Failures: High",
+      "metricKey": "results.vulnerabilityDistribution.high",
+      "value": 90,
+      "comparator": "LTE"
+    },
+    {
+      "displayName": "Vulnerability Failures: Medium",
+      "metricKey": "results.vulnerabilityDistribution.medium",
+      "value": 90,
+      "comparator": "LTE"
+    },
+    {
+      "displayName": "Vulnerability Failures: Low",
+      "metricKey": "results.vulnerabilityDistribution.low",
+      "value": 90,
+      "comparator": "LTE"
+    },
+    {
+      "displayName": "Vulnerability Failures: Total",
+      "metricKey": "results.vulnerabilityDistribution.total",
+      "value": 90,
+      "comparator": "LTE"
+    }
+  ]
+}

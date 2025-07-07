@@ -36,7 +36,14 @@ def stack_name(cdk_outputs):
 
 @pytest.fixture(scope="session")
 def aws_client(cdk_outputs, stack_name):
-    """Initializes the AWSClient with role assumption for tests."""
+    """Provides a configured AWS client for interacting with the deployed stack."""
+    table_name = cdk_outputs.get_output(stack_name, "WorkflowStateTableName")
+    if not table_name:
+        raise ValueError("WorkflowStateTableName not found in CDK outputs. Deploy the CDK stack.")
+    
+    config_table_name = cdk_outputs.get_output(stack_name, "MockConfigTableName")
+    if not config_table_name:
+        raise ValueError("MockConfigTableName not found in CDK outputs. Deploy the CDK stack.")
     
     # Retrieve role ARN from CDK outputs, ensuring it exists.
     role_arn = cdk_outputs.get_output(stack_name, "TestExecutorRoleArn")
@@ -59,8 +66,5 @@ def aws_client(cdk_outputs, stack_name):
 @pytest.fixture(scope="module")
 def workflow_verifier(aws_client, cdk_outputs, stack_name):
     """Provides a verifier instance for checking workflow state."""
-    table_name = cdk_outputs.get_output(stack_name, "CheckpointTableName")
-    if not table_name:
-        raise ValueError("CheckpointTableName not found in CDK outputs. Deploy the CDK stack.")
-        
+    table_name = cdk_outputs.get_output(stack_name, "WorkflowStateTableName")
     return WorkflowVerifier(aws_client, table_name) 

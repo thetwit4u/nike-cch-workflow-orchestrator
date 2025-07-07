@@ -1,0 +1,228 @@
+schema_version: "1.1.2"
+workflow_name: "Async Request Capability Workflow"
+workflow_id: "async_request_capability"
+entry_point: Prepare_Filing_Request
+
+initial_context:
+  - deliverySetId
+  - deliverySetURI
+
+nodes:
+  Prepare_Filing_Request:
+    type: set_state
+    title: "Prepare Filing Request"
+    static_outputs:
+      request_prepared: true
+      request_timestamp: "2024-01-01T10:00:00Z"
+      processing_priority: "high"
+    on_success: Create_Filing_Packs
+
+  Create_Filing_Packs:
+    type: async_request
+    title: "Create Filing Packs"
+    capability_id: "import#create_filingpacks"
+    input_keys:
+      - "deliverySetId"
+      - "deliverySetURI"
+    request_output_keys:
+      - "deliverySetImportEnrichedId"
+      - "deliverySetImportEnrichedURI"
+      - "deliverySetImportEnrichedStatus"
+      - "deliverySetImportEnrichedError"
+      - "filingPacksStatus"
+      - "filingPacksError"
+      - "importFilingPacks"
+    on_response: Check_Filing_Pack_Status
+    on_failure: Handle_Filing_Error
+
+  Check_Filing_Pack_Status:
+    type: condition
+    title: "Check Filing Pack Creation Status"
+    condition_on_key: "filingPacksStatus"
+    branches:
+      "SUCCESS": Submit_Declaration
+      "PARTIAL": Handle_Partial_Success
+      "FAILED": Handle_Filing_Error
+      "_default": Handle_Filing_Error
+
+  Submit_Declaration:
+    type: async_request
+    title: "Submit Declaration to Customs"
+    capability_id: "declaration_communicator#submit_import"
+    input_keys:
+      - "importFilingPacks"
+      - "deliverySetImportEnrichedURI"
+    request_output_keys:
+      - "submitStatus"
+      - "submitError"
+      - "declarationId"
+      - "customsReference"
+    on_response: Check_Submission_Status
+    on_failure: Handle_Submission_Error
+
+  Check_Submission_Status:
+    type: condition
+    title: "Check Declaration Submission Status"
+    condition_on_key: "submitStatus"
+    branches:
+      "SUBMITTED": Monitor_Customs_Response
+      "REJECTED": Handle_Submission_Rejection
+      "PENDING": Wait_For_Submission
+      "_default": Handle_Submission_Error
+
+  Monitor_Customs_Response:
+    type: async_request
+    title: "Monitor Customs Processing"
+    capability_id: "customs_monitor#track_status"
+    input_keys:
+      - "declarationId"
+      - "customsReference"
+    request_output_keys:
+      - "customsStatus"
+      - "customsEntryStatus"
+      - "releaseStatus"
+      - "customsError"
+    on_response: Check_Customs_Status
+    on_failure: Handle_Customs_Error
+
+  Check_Customs_Status:
+    type: condition
+    title: "Check Customs Processing Status"
+    condition_on_key: "customsStatus"
+    branches:
+      "RELEASED": Finalize_Processing
+      "EXAMINATION": Handle_Examination
+      "HOLD": Handle_Hold
+      "ERROR": Handle_Customs_Error
+      "_default": Continue_Monitoring
+
+  Finalize_Processing:
+    type: async_request
+    title: "Finalize Import Processing"
+    capability_id: "import#finalize_process"
+    input_keys:
+      - "deliverySetId"
+      - "declarationId"
+      - "releaseStatus"
+    request_output_keys:
+      - "finalizeStatus"
+      - "finalizeError"
+      - "completionTimestamp"
+    on_response: Check_Finalization
+    on_failure: Handle_Finalization_Error
+
+  Check_Finalization:
+    type: condition
+    title: "Check Finalization Status"
+    condition_on_key: "finalizeStatus"
+    branches:
+      "COMPLETED": Processing_Complete
+      "_default": Handle_Finalization_Error
+
+  Processing_Complete:
+    type: set_state
+    title: "Processing Successfully Completed"
+    static_outputs:
+      workflow_status: "completed"
+      success: true
+      completion_type: "full_success"
+    on_success: End_Workflow
+
+  # Partial Success Handling
+  Handle_Partial_Success:
+    type: set_state
+    title: "Handle Partial Filing Success"
+    static_outputs:
+      workflow_status: "partial_success"
+      partial_reason: "some_filing_packs_failed"
+    on_success: Submit_Declaration  # Continue with available packs
+
+  # Wait States
+  Wait_For_Submission:
+    type: set_state
+    title: "Wait for Submission Processing"
+    static_outputs:
+      waiting_for: "submission_processing"
+      wait_start_time: "2024-01-01T10:00:00Z"
+    on_success: Submit_Declaration  # Retry submission
+
+  Continue_Monitoring:
+    type: set_state
+    title: "Continue Customs Monitoring"
+    static_outputs:
+      monitoring_status: "ongoing"
+      last_check_time: "2024-01-01T10:00:00Z"
+    on_success: Monitor_Customs_Response  # Continue monitoring
+
+  # Special Case Handling
+  Handle_Examination:
+    type: set_state
+    title: "Handle Customs Examination"
+    static_outputs:
+      examination_required: true
+      examination_type: "physical"
+      workflow_status: "examination_pending"
+    on_success: End_Workflow  # Workflow ends, external process takes over
+
+  Handle_Hold:
+    type: set_state
+    title: "Handle Customs Hold"
+    static_outputs:
+      hold_status: true
+      hold_reason: "customs_review"
+      workflow_status: "hold_pending"
+    on_success: End_Workflow  # Workflow ends, manual intervention required
+
+  # Error Handling Nodes
+  Handle_Filing_Error:
+    type: log_error
+    title: "Handle Filing Pack Creation Error"
+    default_error_code: "FILING-001"
+    message_from_context_key: "filingPacksError"
+    default_message: "Failed to create filing packs"
+    on_success: Set_Error_State
+
+  Handle_Submission_Error:
+    type: log_error
+    title: "Handle Declaration Submission Error"
+    default_error_code: "SUBMIT-001"
+    message_from_context_key: "submitError"
+    default_message: "Failed to submit declaration"
+    on_success: Set_Error_State
+
+  Handle_Submission_Rejection:
+    type: log_error
+    title: "Handle Declaration Rejection"
+    default_error_code: "REJECT-001"
+    message_from_context_key: "submitError"
+    default_message: "Declaration was rejected by customs"
+    on_success: Set_Error_State
+
+  Handle_Customs_Error:
+    type: log_error
+    title: "Handle Customs Processing Error"
+    default_error_code: "CUSTOMS-001"
+    message_from_context_key: "customsError"
+    default_message: "Error occurred during customs processing"
+    on_success: Set_Error_State
+
+  Handle_Finalization_Error:
+    type: log_error
+    title: "Handle Finalization Error"
+    default_error_code: "FINAL-001"
+    message_from_context_key: "finalizeError"
+    default_message: "Failed to finalize import processing"
+    on_success: Set_Error_State
+
+  Set_Error_State:
+    type: set_state
+    title: "Set Workflow Error State"
+    static_outputs:
+      workflow_status: "error"
+      success: false
+      requires_manual_intervention: true
+    on_success: End_Workflow
+
+  End_Workflow:
+    type: end
+    title: "Async Request Workflow Complete"

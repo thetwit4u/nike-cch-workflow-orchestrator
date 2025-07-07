@@ -1,6 +1,7 @@
 # Cursor
+.cursor/*
 .cursor/
-.cursor-history/
+*.code-workspace
 refprojects/
 docs/
 
@@ -38,3 +39,6 @@ cdk.local.json
 PLANNING.md
 TASKS.md
 /schemas/
+
+# CDK outputs
+workflow-orchestrator/cdk/cdk-outputs.json

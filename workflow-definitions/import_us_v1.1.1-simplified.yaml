@@ -1,50 +1,37 @@
 schema_version: "1.1.2"
 workflow_name: "Simplified Import US Workflow"
 workflow_id: "import_us_v1_simplified"
-entry_point: Check_Filing_Pack_Creation_Started
+entry_point: Create_Filing_Packs
 
 initial_context:
   - deliverySetId
   - deliverySetURI
 
 nodes:
-  Check_Filing_Pack_Creation_Started:
-    type: condition
-    title: "Check if Filing Pack Creation is Already Scheduled"
-    condition_on_key: "data.filingpackCreationStarted"
-    branches:
-      "true": Log_Error_Already_Started
-      "_default": Retrieve_Planned_Discharge_Date # Treat null/missing/false as the default path
-
-  Retrieve_Planned_Discharge_Date:
-    type: library_call
-    title: "Retrieve Planned Discharge Date for OTF"
-    library_function_id: "s3#read_jsonpath"
-    parameters:
-      input_s3_uri_key: "data.deliverySetURI"
-      jsonpath_expression: "$.consignment.plannedDischargeDate"
-    output_key: "data.plannedDischargeDate"
-    on_success: Calculate_OTF_Date
+  Create_Filing_Packs:
+    type: async_request
+    title: "Create Filing Packs with Enrichment"
+    capability_id: "import#create_filingpacks"
+    input_keys:
+      - "deliverySetId"
+      - "deliverySetURI"
+    request_output_keys:
+      - "deliverySetImportEnrichedId"
+      - "deliverySetImportEnrichedURI"
+      - "deliverySetImportEnrichedStatus"
+      - "deliverySetImportEnrichedError"
+      - "importFilingPacksStatus"
+      - "importFilingPacksError"
+      - "importFilingPacks"
+    on_response: Process_Filing_Packs_Response
     on_failure: Handle_Error
 
-  Calculate_OTF_Date:
-    type: library_call
-    title: "Calculate Optimal Time of Filing (OTF)"
-    library_function_id: "core#calculate_timedelta"
-    parameters:
-      date_context_key: "data.plannedDischargeDate"
-      timedelta:
-        days: -10
-    output_key: "data.otfDate"
-    on_success: End_Workflow # Simplified path
-    on_failure: Handle_Error
-
-  Log_Error_Already_Started:
-    type: log_error
-    title: "Log Error: Already Started"
-    default_error_code: "OTF-001"
-    default_message: "Filing pack creation process was already started for this workflow."
+  Process_Filing_Packs_Response:
+    type: sync_call
+    title: "Process Filing Packs Response"
+    capability_id: "core-process-response"
     on_success: End_Workflow
+    on_failure: Handle_Error
 
   Handle_Error:
     type: log_error
@@ -56,4 +43,4 @@ nodes:
 
   End_Workflow:
     type: end
-    title: "End Workflow" 
+    title: "End Workflow"

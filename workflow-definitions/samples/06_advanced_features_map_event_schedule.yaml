@@ -1,0 +1,276 @@
+schema_version: "1.1.2"
+workflow_name: "Advanced Features - Map Fork, Event Wait, Scheduled Request"
+workflow_id: "advanced_features_demo"
+entry_point: Initialize_Processing
+
+initial_context:
+  - deliverySetURI
+  - scheduledDate
+
+nodes:
+  Initialize_Processing:
+    type: set_state
+    title: "Initialize Advanced Processing"
+    static_outputs:
+      processing_mode: "advanced"
+      initialization_complete: true
+    on_success: Read_Filing_Packs
+
+  Read_Filing_Packs:
+    type: library_call
+    title: "Read Filing Packs from Delivery Set"
+    library_function_id: "s3#read_jsonpath"
+    parameters:
+      input_s3_uri_key: "deliverySetURI"
+      jsonpath_expression: "$.filingPacks"
+    output_key: "filingPackList"
+    on_success: Check_Scheduling_Required
+    on_failure: Handle_Read_Error
+
+  Check_Scheduling_Required:
+    type: condition
+    title: "Check if Scheduled Processing Required"
+    condition_on_key: "scheduledDate"
+    branches:
+      "null": Start_Immediate_Processing
+      "_default": Schedule_Future_Processing
+
+  Schedule_Future_Processing:
+    type: scheduled_request
+    title: "Schedule Future Filing Pack Processing"
+    description: "Schedules the processing to occur at the specified date"
+    capability_id: "import#process_filing_packs"
+    input_keys: ["filingPackList", "deliverySetURI"]
+    schedule_parameters:
+      date_context_key: "scheduledDate"
+    on_schedule_set:
+      scheduling_complete: true
+      scheduled_processing: true
+    request_output_keys:
+      - "processingStatus"
+      - "processingError"
+      - "processedPacks"
+    on_response: Check_Scheduled_Processing_Result
+    on_success: End_Workflow
+    on_failure: Handle_Scheduling_Error
+
+  Check_Scheduled_Processing_Result:
+    type: condition
+    title: "Check Scheduled Processing Result"
+    condition_on_key: "processingStatus"
+    branches:
+      "SUCCESS": Start_Immediate_Processing
+      "_default": Handle_Processing_Error
+
+  Start_Immediate_Processing:
+    type: set_state
+    title: "Start Immediate Processing"
+    static_outputs:
+      immediate_processing: true
+      processing_start_time: "2024-01-01T10:00:00Z"
+    on_success: Process_Filing_Packs_Parallel
+
+  Process_Filing_Packs_Parallel:
+    type: map_fork
+    title: "Process Filing Packs in Parallel"
+    input_list_key: "filingPackList"
+    branch_key: "filingPackId"
+    branch_entry_node: Process_Single_Filing_Pack
+
+  # Sub-workflow for processing a single filing pack
+  Process_Single_Filing_Pack:
+    type: async_request
+    title: "Process Single Filing Pack"
+    capability_id: "declaration_communicator#submit_import"
+    input_keys: ["current_map_item"]
+    request_output_keys:
+      - "submitStatus"
+      - "submitError"
+      - "declarationId"
+    on_response: Wait_For_Customs_Status
+    on_failure: Handle_Single_Pack_Error
+
+  Wait_For_Customs_Status:
+    type: event_wait
+    title: "Wait for Customs Status Update"
+    event_key: "customsStatus"
+    on_event: Check_Customs_Status
+
+  Check_Customs_Status:
+    type: condition
+    title: "Check Customs Status"
+    condition_on_key: "customsStatus"
+    branches:
+      "RELEASED": Wait_For_Customs_Entry
+      "EXAMINATION": Handle_Examination_Required
+      "HOLD": Handle_Customs_Hold
+      "ERROR": Handle_Customs_Error
+      "_default": Wait_For_Customs_Status
+
+  Wait_For_Customs_Entry:
+    type: event_wait
+    title: "Wait for Customs Entry Update"
+    event_key: "customsEntryStatus"
+    on_event: Check_Customs_Entry
+
+  Check_Customs_Entry:
+    type: condition
+    title: "Check Customs Entry Status"
+    condition_on_key: "customsEntryStatus"
+    branches:
+      "RECEIVED": Single_Pack_Complete
+      "ERROR": Handle_Entry_Error
+      "_default": Wait_For_Customs_Entry
+
+  Single_Pack_Complete:
+    type: set_state
+    title: "Single Filing Pack Complete"
+    static_outputs:
+      pack_status: "completed"
+      completion_time: "2024-01-01T12:00:00Z"
+    on_success: End_Single_Pack_Branch
+
+  Handle_Examination_Required:
+    type: set_state
+    title: "Handle Examination Required"
+    static_outputs:
+      pack_status: "examination_required"
+      examination_scheduled: true
+    on_success: End_Single_Pack_Branch
+
+  Handle_Customs_Hold:
+    type: set_state
+    title: "Handle Customs Hold"
+    static_outputs:
+      pack_status: "customs_hold"
+      hold_reason: "customs_review"
+    on_success: End_Single_Pack_Branch
+
+  Handle_Single_Pack_Error:
+    type: log_error
+    title: "Handle Single Pack Error"
+    default_error_code: "PACK-001"
+    message_from_context_key: "submitError"
+    default_message: "Error processing single filing pack"
+    on_success: Set_Pack_Error_Status
+
+  Handle_Customs_Error:
+    type: log_error
+    title: "Handle Customs Error"
+    default_error_code: "CUSTOMS-001"
+    message_from_context_key: "customsError"
+    default_message: "Error in customs processing"
+    on_success: Set_Pack_Error_Status
+
+  Handle_Entry_Error:
+    type: log_error
+    title: "Handle Entry Error"
+    default_error_code: "ENTRY-001"
+    message_from_context_key: "entryError"
+    default_message: "Error in customs entry processing"
+    on_success: Set_Pack_Error_Status
+
+  Set_Pack_Error_Status:
+    type: set_state
+    title: "Set Pack Error Status"
+    static_outputs:
+      pack_status: "error"
+      error_occurred: true
+    on_success: End_Single_Pack_Branch
+
+  End_Single_Pack_Branch:
+    type: end_branch
+    title: "End Single Pack Processing Branch"
+
+  # Main workflow continues after map_fork completion
+  Join_All_Filing_Packs:
+    type: join
+    title: "Join All Filing Pack Processing"
+    join_branches:
+      - Process_Filing_Packs_Parallel
+    destination: "processedPackResults"
+    on_success: Analyze_Results
+
+  Analyze_Results:
+    type: set_state
+    title: "Analyze Processing Results"
+    static_outputs:
+      analysis_complete: true
+      total_packs_processed: 5
+      successful_packs: 3
+      examination_required: 1
+      errors: 1
+    on_success: Generate_Summary_Report
+
+  Generate_Summary_Report:
+    type: async_request
+    title: "Generate Processing Summary Report"
+    capability_id: "reporting#generate_summary"
+    input_keys:
+      - "processedPackResults"
+      - "deliverySetURI"
+    request_output_keys:
+      - "reportStatus"
+      - "reportURI"
+      - "reportError"
+    on_response: Check_Report_Status
+    on_failure: Handle_Report_Error
+
+  Check_Report_Status:
+    type: condition
+    title: "Check Report Generation Status"
+    condition_on_key: "reportStatus"
+    branches:
+      "GENERATED": Processing_Complete
+      "_default": Handle_Report_Error
+
+  Processing_Complete:
+    type: set_state
+    title: "Advanced Processing Complete"
+    static_outputs:
+      workflow_status: "completed"
+      completion_timestamp: "2024-01-01T15:00:00Z"
+      all_features_tested: true
+    on_success: End_Workflow
+
+  # Error Handling
+  Handle_Read_Error:
+    type: log_error
+    title: "Handle Read Error"
+    default_error_code: "READ-001"
+    default_message: "Failed to read filing packs from delivery set"
+    on_success: Set_Workflow_Error
+
+  Handle_Scheduling_Error:
+    type: log_error
+    title: "Handle Scheduling Error"
+    default_error_code: "SCHED-001"
+    default_message: "Failed to schedule future processing"
+    on_success: Set_Workflow_Error
+
+  Handle_Processing_Error:
+    type: log_error
+    title: "Handle Processing Error"
+    default_error_code: "PROC-001"
+    default_message: "Error occurred during scheduled processing"
+    on_success: Set_Workflow_Error
+
+  Handle_Report_Error:
+    type: log_error
+    title: "Handle Report Generation Error"
+    default_error_code: "REPORT-001"
+    message_from_context_key: "reportError"
+    default_message: "Failed to generate summary report"
+    on_success: Set_Workflow_Error
+
+  Set_Workflow_Error:
+    type: set_state
+    title: "Set Workflow Error State"
+    static_outputs:
+      workflow_status: "error"
+      error_recovery_required: true
+    on_success: End_Workflow
+
+  End_Workflow:
+    type: end
+    title: "Advanced Features Workflow Complete"

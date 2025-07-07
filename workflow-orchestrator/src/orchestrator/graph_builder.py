@@ -54,66 +54,45 @@ class GraphBuilder:
             self.workflow.add_node(node_name, action)
 
     def _add_edges(self):
-        """
-        Adds all edges from the definition to the graph, including conditional edges.
-        """
-        for node_name, node_data in self.definition['nodes'].items():
-            node_type = node_data.get('type')
-            
-            # --- Start of new conditional logic for success/failure paths ---
-            on_success_node = node_data.get('on_success')
-            on_failure_node = node_data.get('on_failure')
+        """Adds edges to the graph based on the workflow definition."""
+        for node_name, node_config in self.definition["nodes"].items():
+            node_type = node_config.get("type")
 
-            if on_success_node and on_failure_node:
-                # This node has distinct success and failure paths, requiring a conditional edge.
-                def error_resolver(state: WorkflowState):
-                    if state.get("is_error", False):
-                        logger.warning(f"Error detected in state. Routing node '{node_name}' to on_failure path: '{on_failure_node}'.")
-                        return on_failure_node
-                    return on_success_node
+            if node_type == "condition":
+                branches = node_config.get("branches", {})
+                for next_node in branches.values():
+                    if next_node:  # Ensure there's a next node defined
+                        self.workflow.add_edge(node_name, next_node)
+            elif node_type == "map_fork":
+                # The join node will have an edge pointing *from* the map_fork
+                pass
+            elif node_type == "join":
+                # The join node is a convergence point, edges point *to* it
+                if "on_success" in node_config:
+                    self.workflow.add_edge(node_name, node_config["on_success"])
+                if "on_failure" in node_config:
+                    self.workflow.add_edge(node_name, node_config["on_failure"])
+            else:  # For linear nodes like library_call, async_request, etc.
+                # Handle both on_success and the on_response alias for async nodes
+                success_path = node_config.get("on_success") or node_config.get("on_response")
                 
-                self.workflow.add_conditional_edges(
-                    node_name,
-                    error_resolver,
-                    {on_success_node: on_success_node, on_failure_node: on_failure_node}
-                )
-                # Continue to the next node in the loop as the edges are now fully defined.
-                continue
-            # --- End of new conditional logic ---
-
-            if node_type == 'condition':
-                self._add_conditional_edge(node_name, node_data)
-            elif node_type == 'map_fork':
-                self._add_map_fork_edge(node_name, node_data)
-            elif node_type == 'event_wait':
-                self._add_event_wait_edge(node_name, node_data)
-            elif node_type == 'fork':
-                # Edges for fork nodes are defined by their 'branches'
-                if 'branches' in node_data:
-                    for target in node_data['branches']:
-                        self.workflow.add_edge(node_name, target)
-            elif node_type == 'join':
-                # Edges for join nodes are defined by 'join_branches'.
-                # We skip adding an edge if the source is a map_fork, as that
-                # is handled by the conditional edge in _add_map_fork_edge.
-                if 'join_branches' in node_data:
-                    for source in node_data['join_branches']:
-                        source_node_type = self.definition['nodes'].get(source, {}).get('type')
-                        if source_node_type != 'map_fork':
-                            self.workflow.add_edge(source, node_name)
-            elif node_type == 'end':
-                self.workflow.add_edge(node_name, END)
-            
-            # Standard routing for other nodes (if not handled by the success/failure logic above)
-            
-            if 'on_success' in node_data:
-                self.workflow.add_edge(node_name, node_data['on_success'])
-            
-            if 'on_response' in node_data:
-                self.workflow.add_edge(node_name, node_data['on_response'])
-            
-            if 'next' in node_data:
-                self.workflow.add_edge(node_name, node_data['next'])
+                if success_path:
+                    self.workflow.add_edge(node_name, success_path)
+                
+                if "on_failure" in node_config:
+                    # Add a conditional edge for failure based on the 'is_error' flag
+                    # The source of the conditional edge is the node itself
+                    self.workflow.add_conditional_edges(
+                        node_name,
+                        # The decider function checks the 'is_error' flag in the state
+                        lambda state: state.get("is_error", False),
+                        {
+                            # If is_error is True, go to the on_failure node
+                            True: node_config["on_failure"],
+                            # If is_error is False, go to success_path or end the graph
+                            False: success_path or END
+                        }
+                    )
 
     def _add_conditional_edge(self, node_name: str, node_data: Dict[str, Any]):
         """Adds a standard conditional edge for branching."""
@@ -274,54 +253,14 @@ class GraphBuilder:
         library_call = node_data.get('library_function_id')
         capability_call = node_data.get('capability_id')
 
-        # Add a specific action for the 'end' node to set the completed status
+        # --- Core Node Types ---
         if node_type == 'end':
             return partial(core_nodes.set_state_node_wrapper,
                            node_config={'static_outputs': {'status': 'COMPLETED'}},
                            node_name=node_name)
 
-        # Generic handlers for simple node types
         if node_type in ['entry', 'fork', 'join', 'condition', 'map_fork', 'event_wait', 'end_branch']:
-             return lambda state: state
-        
-        # Handler for core library functions
-        if library_call:
-            if library_call not in library_handler_map:
-                raise ValueError(f"Unknown library function ID: {library_call}")
-            handler = library_handler_map[library_call]
-            # The specific library handlers expect the full state and config
-            return partial(handler, node_config=node_data, node_name=node_name)
-        
-        # Handler for capability nodes that can interrupt execution (async)
-        if node_type in ['async_request', 'scheduled_request']:
-            if not capability_call:
-                raise ValueError(f"Node '{node_name}' of type '{node_type}' must have a 'capability_id'.")
-            
-            handler = capability_nodes.capability_handler_map.get(capability_call)
-            if not handler:
-                raise ValueError(f"No handler found for capability ID '{capability_call}' in node '{node_name}'.")
-            
-            return partial(core_nodes.capability_node_wrapper, handler=handler, node_config=node_data, node_name=node_name)
-        
-        # Handler for capability nodes that run synchronously
-        if node_type == 'sync_call':
-            if not capability_call:
-                raise ValueError(f"Node '{node_name}' of type 'sync_call' must have a 'capability_id'.")
-
-            handler = capability_nodes.capability_handler_map.get(capability_call)
-            if not handler:
-                raise ValueError(f"No handler found for capability ID '{capability_call}' in node '{node_name}'.")
-
-            # This needs a different wrapper that doesn't handle Interrupt
-            return partial(core_nodes.sync_capability_node_wrapper, handler=handler, node_config=node_data, node_name=node_name)
-
-        # Fallback for other capability-based nodes if not explicitly handled above
-        if capability_call:
-            handler = capability_nodes.capability_handler_map.get(capability_call)
-            if not handler:
-                raise ValueError(f"No handler found for capability ID '{capability_call}' in node '{node_name}'.")
-            # Default to the interrupting wrapper for safety
-            return partial(core_nodes.capability_node_wrapper, handler=handler, node_config=node_data, node_name=node_name)
+             return lambda state: state # These are routing/structural nodes
 
         if node_type == 'log_error':
             return partial(core_nodes.handle_log_error, node_config=node_data, node_name=node_name)
@@ -329,7 +268,30 @@ class GraphBuilder:
         if node_type == 'set_state':
             return partial(core_nodes.set_state_node_wrapper, node_config=node_data, node_name=node_name)
 
-        # Fallback for unhandled node types
+        # --- Library Call Node ---
+        if library_call:
+            if library_call not in library_handler_map:
+                raise ValueError(f"Unknown library function ID: {library_call}")
+            handler = library_handler_map[library_call]
+            return partial(handler, node_config=node_data, node_name=node_name)
+        
+        # --- Capability Node Types ---
+        if node_type == 'async_request':
+            if not capability_call:
+                raise ValueError(f"Node '{node_name}' of type 'async_request' must have a 'capability_id'.")
+            return partial(capability_nodes.handle_async_request, node_config=node_data, node_name=node_name)
+
+        if node_type == 'scheduled_request':
+            if not capability_call:
+                raise ValueError(f"Node '{node_name}' of type 'scheduled_request' must have a 'capability_id'.")
+            return partial(capability_nodes.handle_scheduled_request, node_config=node_data, node_name=node_name)
+        
+        if node_type == 'sync_call':
+            if not capability_call:
+                raise ValueError(f"Node '{node_name}' of type 'sync_call' must have a 'capability_id'.")
+            return partial(capability_nodes.handle_sync_call, node_config=node_data, node_name=node_name)
+
+        # --- Fallback for unhandled node types ---
         logger.warning(f"No specific action found for node '{node_name}' of type '{node_type}'. It will be treated as a pass-through node.")
         
         def unhandled_node_action(state):

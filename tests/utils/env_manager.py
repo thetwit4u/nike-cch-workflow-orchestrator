@@ -89,6 +89,9 @@ class EnvironmentManager:
             # Add test context to ensure test-only resources are created
             "-c",
             "test=true",
+            # Ensure we build the lambda from source, not a pipeline ECR image
+            "-c",
+            "image_uri=",
         ]
         if profile:
             command.extend(["--profile", profile])

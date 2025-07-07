@@ -18,6 +18,7 @@ import dateutil.parser
 from langgraph.types import Interrupt, interrupt
 
 from orchestrator.state import WorkflowState
+from .library_nodes import _get_required_param
 
 logger = logging.getLogger(__name__)
 
@@ -76,52 +77,53 @@ def handle_sync_call(state: WorkflowState, node_config: dict, node_name: str) ->
     return state
 
 
-def handle_async_request(state: WorkflowState, node_config: dict, node_name: str) -> WorkflowState:
+def handle_async_request(state: WorkflowState, node_config: dict, node_name: str):
     """
     Handles 'async_request' nodes by sending a command to a capability queue and then pausing.
     """
     try:
         logger.info(f"Executing 'async_request' node '{node_name}' with config: {node_config}")
         
-        command_parser = CommandParser(state, node_config)
-        command_payload = command_parser.create_command_message(command_type="ASYNC_REQ")
-
-        capability_id = node_config.get("capability_id")
-        if not capability_id or '#' not in capability_id:
-            raise ValueError(f"Invalid capability_id format: '{capability_id}'. Expected 'service#action'.")
-
-        capability_service = capability_id.split('#')[0].upper()
+        capability_id = _get_required_param(node_config, "capability_id")
         
-        # Check for a test-specific HTTP endpoint first.
-        test_endpoint_var = f"CCH_MOCK_HTTP_ENDPOINT_{capability_service}"
-        http_endpoint = os.environ.get(test_endpoint_var)
+        # The parser needs the full state to access both 'data' and 'context'
+        parser = CommandParser(state, node_config)
+        inner_command = parser.create_command_message(command_type="ASYNC_REQ")
 
-        if http_endpoint:
-            logger.info(f"Using mock HTTP endpoint for capability '{capability_id}' from env var '{test_endpoint_var}'.")
-            http_client.post(http_endpoint, command_payload)
-        else:
-            # Fallback to the production SQS queue configuration.
-            prod_queue_var = f"CCH_CAPABILITY_{capability_service}"
-            sqs_queue = os.environ.get(prod_queue_var)
-            if not sqs_queue:
-                raise ValueError(f"Endpoint for capability service '{capability_service}' is not configured. Checked for '{test_endpoint_var}' and '{prod_queue_var}'.")
-            
-            logger.info(f"Sending ASYNC_REQ to SQS queue for capability '{capability_id}'.")
-            queue_client.send_message(
-                queue_url=sqs_queue,
-                message_body=json.dumps(command_payload)
-            )
+        # Construct the full message envelope, including the workflow context
+        workflow_context = state.get("context", {})
+        full_command_message = {
+            "workflowInstanceId": workflow_context.get("workflowInstanceId"),
+            "correlationId": workflow_context.get("correlationId"),
+            "workflowDefinitionURI": workflow_context.get("workflow_definition_uri"),
+            "command": inner_command
+        }
 
+        # Determine the endpoint (SQS queue URL) for the capability service
+        service_name = capability_id.split('#')[0].upper()
+        endpoint_key_1 = f"CCH_MOCK_HTTP_ENDPOINT_{service_name}"
+        endpoint_key_2 = f"CCH_CAPABILITY_{service_name}"
+        queue_url = os.environ.get(endpoint_key_1) or os.environ.get(endpoint_key_2)
+
+        if not queue_url:
+            raise ValueError(f"Endpoint for capability service '{service_name}' is not configured. "
+                             f"Checked for '{endpoint_key_1}' and '{endpoint_key_2}'.")
+        
+        queue_client = QueueClient()
+        queue_client.send_message(queue_url, full_command_message)
+        
         logger.info(f"Successfully sent async request for capability '{capability_id}'. Pausing for response.")
         
-        # We must interrupt execution here to wait for the async response
-        return interrupt()
+        # Correctly interrupt the graph to wait for the external ASYNC_RESP.
+        return interrupt("Waiting for async capability response.")
 
-    except Exception as e:
-        logger.error(f"Error in 'async_request' node '{node_name}': {e}")
+    except (ValueError, ClientError) as e:
+        # Catch specific operational errors, but allow GraphInterrupt to propagate.
+        error_message = f"Error in 'async_request' node '{node_name}': {e}"
+        logger.error(error_message, exc_info=True)
         state["is_error"] = True
-        state["error_details"] = {"error": str(e), "node": node_name}
-    return state
+        state["error_details"] = {"error": error_message, "node": node_name}
+        return state
 
 
 def handle_scheduled_request(state: WorkflowState, node_config: dict, node_name: str) -> WorkflowState:
