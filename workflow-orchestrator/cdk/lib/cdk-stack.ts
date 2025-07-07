@@ -17,23 +17,23 @@ import {
 import * as python from '@aws-cdk/aws-lambda-python-alpha';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as path from 'path';
-import { Platform } from "aws-cdk-lib/aws-ecr-assets";
 
 interface CchWorkflowOrchestratorStackProps extends StackProps {
-    isTestEnv?: boolean; // Use this flag to conditionally create test resources
+    isTestEnv?: boolean;
 }
 
 export class CchWorkflowOrchestratorStack extends Stack {
     constructor(scope: Construct, id: string, props?: CchWorkflowOrchestratorStackProps) {
         super(scope, id, props);
 
-        const isTestEnv = props?.isTestEnv ?? (this.node.tryGetContext('env') === 'test' || process.env.CDK_ENV === 'test');
-        const env = this.node.tryGetContext('env') || process.env.CDK_ENV || 'dev';
+        // --- Context and Environment Variables ---
+        const env = this.node.tryGetContext('env') || process.env.ENVIRONMENT || 'st';
         const owner = this.node.tryGetContext('owner') || process.env.CCH_OWNER || 'userid';
-        const orgLevel3 = process.env.NIKE_ORG_L3 || 'trade-customs-compliance-hub';
         const imageUri = this.node.tryGetContext('image_uri');
-
+        const isTestEnv = props?.isTestEnv ?? (this.node.tryGetContext('test') === 'true');
+        const orgLevel3 = process.env.NIKE_ORG_L3 || 'trade-customs-compliance-hub';
         const authorizedServicesList = process.env.AUTHORIZED_COMMAND_QUEUE_SENDERS || '';
+        const testExecutorArn = process.env.TEST_EXECUTOR_ARN;
 
         const capabilityEnvVars: { [key: string]: string } = {};
         Object.keys(process.env).forEach(key => {
@@ -42,6 +42,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
             }
         });
 
+        // --- Tags ---
         Tags.of(this).add('nike-owner', process.env.NIKE_OWNER || 'stijn.liesenborghs@nike.com');
         Tags.of(this).add('nike-distributionlist', process.env.NIKE_DL || 'Lst-gt.scpt.tt.trade.all@Nike.com');
         Tags.of(this).add('nike-environment', env);
@@ -49,73 +50,71 @@ export class CchWorkflowOrchestratorStack extends Stack {
         Tags.of(this).add('nike-org-level2', 'trade-transportation');
         Tags.of(this).add('nike-org-level3', orgLevel3);
         Tags.of(this).add('nike-owner-id', owner);
+        this.templateOptions.description = "Stack for the CCH Workflow Orchestrator";
 
-        this.templateOptions.description = "Stack for the CCH Workflow Orchestrator PoC";
-
+        // --- Resource Naming ---
         const ownerSuffix = owner ? `-${owner}` : '';
         const mainPrefix = 'cch-flow-orchestrator';
         const definitionsBucketPrefix = 'cch-flow-definitions';
 
-        const commandQueueName = `${mainPrefix}-command-queue-${env}${ownerSuffix}`;
-        const stateTableName = `${mainPrefix}-workflow-state-table-${env}${ownerSuffix}`;
-        const eventdataBucketName = `${mainPrefix}-eventdata-bucket-${env}${ownerSuffix}`;
-        const definitionsBucketName = `${definitionsBucketPrefix}-${env}${ownerSuffix}`;
-        const schedulerGroupName = `${mainPrefix}-schedules-${env}${ownerSuffix}`;
-        
+        // --- SQS Queues ---
         const commandQueue = new sqs.Queue(this, 'OrchestratorCommandQueue', {
-            queueName: commandQueueName,
+            queueName: `${mainPrefix}-command-queue-${env}${ownerSuffix}`,
             visibilityTimeout: Duration.seconds(300),
         });
 
-        if (authorizedServicesList) {
-            const authorizedServices = authorizedServicesList.split(',').map(s => s.trim()).filter(s => s);
-            if (authorizedServices.length > 0) {
-                commandQueue.addToResourcePolicy(
-                    new iam.PolicyStatement({
-                        sid: 'AllowAuthorizedServicesToSendMessages',
-                        effect: iam.Effect.ALLOW,
-                        principals: authorizedServices.map(arn => new iam.ArnPrincipal(arn)),
-                        actions: ['sqs:SendMessage'],
-                        resources: [commandQueue.queueArn],
-                    }),
-                );
-            }
-        }
-        
-        const schedulerRole = new iam.Role(this, 'SchedulerRole', {
-            assumedBy: new iam.ServicePrincipal('scheduler.amazonaws.com'),
-        });
-        commandQueue.grantSendMessages(schedulerRole);
-
-        new scheduler.CfnScheduleGroup(this, 'SchedulerGroup', {
-            name: schedulerGroupName,
+        const replyQueue = new sqs.Queue(this, 'OrchestratorReplyQueue', {
+            queueName: `${mainPrefix}-reply-queue-${env}${ownerSuffix}`,
+            visibilityTimeout: Duration.seconds(300),
         });
 
+        const importRequestQueue = new sqs.Queue(this, 'ImportRequestQueue', {
+            queueName: `${mainPrefix}-capability-import-request-queue-${env}${ownerSuffix}`,
+            visibilityTimeout: Duration.seconds(300),
+        });
+
+        const exportRequestQueue = new sqs.Queue(this, 'ExportRequestQueue', {
+            queueName: `${mainPrefix}-capability-export-request-queue-${env}${ownerSuffix}`,
+            visibilityTimeout: Duration.seconds(300),
+        });
+
+        // --- DynamoDB State Table ---
         const stateTable = new dynamodb.Table(this, 'WorkflowStateTable', {
-            tableName: stateTableName,
+            tableName: `${mainPrefix}-workflow-state-table-${env}${ownerSuffix}`,
             partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
             sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
             billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
             removalPolicy: cdk.RemovalPolicy.DESTROY,
         });
 
+        // --- S3 Buckets ---
         const definitionsBucket = new s3.Bucket(this, 'WorkflowDefinitionsBucket', {
-            bucketName: definitionsBucketName,
+            bucketName: `${definitionsBucketPrefix}-${env}${ownerSuffix}`,
             versioned: true,
             removalPolicy: cdk.RemovalPolicy.DESTROY,
             autoDeleteObjects: true,
         });
 
         const eventdataBucket = new s3.Bucket(this, 'EventDataBucket', {
-            bucketName: eventdataBucketName,
+            bucketName: `${mainPrefix}-eventdata-bucket-${env}${ownerSuffix}`,
             versioned: true,
             removalPolicy: cdk.RemovalPolicy.DESTROY,
             autoDeleteObjects: true,
         });
-        
-        // --- Mock Service (only for test environments) ---
-        let mockCapabilityQueue: sqs.Queue | undefined;
 
+        // --- EventBridge Scheduler ---
+        const schedulerGroupName = `${mainPrefix}-schedules-${env}${ownerSuffix}`;
+        const schedulerRole = new iam.Role(this, 'SchedulerRole', {
+            assumedBy: new iam.ServicePrincipal('scheduler.amazonaws.com'),
+        });
+        commandQueue.grantSendMessages(schedulerRole);
+        new scheduler.CfnScheduleGroup(this, 'SchedulerGroup', {
+            name: schedulerGroupName,
+        });
+
+        // --- Test Environment Specific Resources ---
+        let mockCapabilityQueue: sqs.Queue | undefined;
+        let mockServiceLambda: python.PythonFunction | undefined;
         if (isTestEnv) {
             const mockQueueName = `${mainPrefix}-mock-capability-queue-${env}${ownerSuffix}`;
             const mockConfigTableName = `${mainPrefix}-mock-config-table-${env}${ownerSuffix}`;
@@ -131,10 +130,9 @@ export class CchWorkflowOrchestratorStack extends Stack {
                 queueName: mockQueueName,
                 visibilityTimeout: Duration.seconds(300),
             });
-            
             capabilityEnvVars['CCH_CAPABILITY_IMPORT'] = mockCapabilityQueue.queueUrl;
 
-            const mockServiceLambda = new python.PythonFunction(this, 'CapabilityMockServiceFunction', {
+            mockServiceLambda = new python.PythonFunction(this, 'CapabilityMockServiceFunction', {
                 functionName: `${mainPrefix}-mock-lambda-${env}${ownerSuffix}`,
                 entry: path.join(__dirname, '../../capability-mock-service'),
                 runtime: lambda.Runtime.PYTHON_3_13,
@@ -143,63 +141,49 @@ export class CchWorkflowOrchestratorStack extends Stack {
                 environment: {
                     MOCK_CONFIG_TABLE_NAME: mockConfigTable.tableName,
                     ORCHESTRATOR_COMMAND_QUEUE_URL: commandQueue.queueUrl,
+                    REPLY_QUEUE_URL: replyQueue.queueUrl, // Mock also sends to reply queue
                     LOG_LEVEL: 'INFO',
                     VERSION: new Date().toISOString(),
                 },
                 timeout: Duration.seconds(30),
             });
-
-            mockServiceLambda.addEventSource(new SqsEventSource(mockCapabilityQueue));
+            mockServiceLambda.addEventSource(new SqsEventSource(mockCapabilityQueue)); // Test mock listens to its dedicated queue
             mockConfigTable.grantReadWriteData(mockServiceLambda);
             commandQueue.grantSendMessages(mockServiceLambda);
+            replyQueue.grantSendMessages(mockServiceLambda);
             eventdataBucket.grantRead(mockServiceLambda);
 
-            new logs.LogRetention(this, 'MockServiceLogRetention', {
-                logGroupName: mockServiceLambda.logGroup.logGroupName,
-                retention: logs.RetentionDays.ONE_DAY,
-            });
-            
-            new cdk.CfnOutput(this, 'MockConfigTableName', {
-                value: mockConfigTable.tableName,
-            });
-            new cdk.CfnOutput(this, 'MockCapabilityQueueUrl', {
-                value: mockCapabilityQueue.queueUrl,
-            });
+            new cdk.CfnOutput(this, 'MockConfigTableName', { value: mockConfigTable.tableName });
+            new cdk.CfnOutput(this, 'MockCapabilityQueueUrl', { value: mockCapabilityQueue.queueUrl });
 
-            const testExecutorArn = process.env.TEST_EXECUTOR_ARN;
             if (testExecutorArn) {
                 const testExecutorRole = new iam.Role(this, 'TestExecutorRole', {
                     roleName: `${mainPrefix}-test-executor-role-${env}${ownerSuffix}`,
                     assumedBy: new iam.ArnPrincipal(testExecutorArn),
-                    description: 'Role for BDD test execution, providing access to stack resources.',
                 });
-
-                testExecutorRole.assumeRolePolicy?.addStatements(
-                    new iam.PolicyStatement({
-                        actions: ['sts:TagSession'],
-                        principals: [new iam.ArnPrincipal(testExecutorArn)],
-                        effect: iam.Effect.ALLOW,
-                    })
-                );
-
+                testExecutorRole.assumeRolePolicy?.addStatements(new iam.PolicyStatement({
+                    actions: ['sts:TagSession'],
+                    principals: [new iam.ArnPrincipal(testExecutorArn)],
+                }));
                 commandQueue.grantSendMessages(testExecutorRole);
                 stateTable.grantReadData(testExecutorRole);
                 definitionsBucket.grantReadWrite(testExecutorRole);
                 eventdataBucket.grantReadWrite(testExecutorRole);
                 mockCapabilityQueue.grantSendMessages(testExecutorRole);
                 mockConfigTable.grantReadWriteData(testExecutorRole);
-
-                new cdk.CfnOutput(this, 'TestExecutorRoleArn', {
-                    value: testExecutorRole.roleArn,
-                    description: 'ARN of the IAM role for the BDD test executor'
-                });
+                new cdk.CfnOutput(this, 'TestExecutorRoleArn', { value: testExecutorRole.roleArn });
             }
         }
 
+        // --- Orchestrator Lambda Function (Conditional Build) ---
         const commonLambdaEnv = {
             STATE_TABLE_NAME: stateTable.tableName,
             DEFINITIONS_BUCKET_NAME: definitionsBucket.bucketName,
             COMMAND_QUEUE_URL: commandQueue.queueUrl,
+            COMMAND_QUEUE_ARN: commandQueue.queueArn,
+            REPLY_QUEUE_URL: replyQueue.queueUrl,
+            IMPORT_QUEUE_URL: importRequestQueue.queueUrl,
+            EXPORT_QUEUE_URL: exportRequestQueue.queueUrl,
             SCHEDULER_ROLE_ARN: schedulerRole.roleArn,
             SCHEDULER_GROUP_NAME: schedulerGroupName,
             LOG_LEVEL: 'INFO',
@@ -207,22 +191,17 @@ export class CchWorkflowOrchestratorStack extends Stack {
             VERSION: new Date().toISOString(),
         };
 
-        let orchestratorLambda;
-
+        let orchestratorLambda: lambda.Function;
         if (imageUri) {
-            // Pipeline deployment: Use the ECR image
             const repository = ecr.Repository.fromRepositoryArn(this, 'EcrRepository', `arn:aws:ecr:${this.region}:${this.account}:repository/${mainPrefix}`);
             orchestratorLambda = new lambda.DockerImageFunction(this, 'OrchestratorLambda', {
                 functionName: `${mainPrefix}-lambda-${env}${ownerSuffix}`,
-                code: lambda.DockerImageCode.fromEcr(repository, {
-                    tagOrDigest: imageUri,
-                }),
+                code: lambda.DockerImageCode.fromEcr(repository, { tagOrDigest: imageUri }),
                 memorySize: 1024,
                 environment: commonLambdaEnv,
                 timeout: Duration.seconds(300),
             });
         } else {
-            // Local deployment: Build from source
             orchestratorLambda = new python.PythonFunction(this, 'OrchestratorLambda', {
                 functionName: `${mainPrefix}-lambda-${env}${ownerSuffix}`,
                 entry: path.join(__dirname, '../../src'),
@@ -232,21 +211,21 @@ export class CchWorkflowOrchestratorStack extends Stack {
                 memorySize: 1024,
                 environment: commonLambdaEnv,
                 timeout: Duration.seconds(300),
-                bundling: {
-                    assetExcludes: ['.DS_Store', '.venv', 'tests'],
-                },
+                bundling: { assetExcludes: ['.DS_Store', '.venv', 'tests'] },
             });
         }
 
+        // --- Permissions ---
         orchestratorLambda.addEventSource(new SqsEventSource(commandQueue));
+        orchestratorLambda.addEventSource(new SqsEventSource(replyQueue));
         definitionsBucket.grantRead(orchestratorLambda);
         eventdataBucket.grantReadWrite(orchestratorLambda);
         stateTable.grantReadWriteData(orchestratorLambda);
-        
+        importRequestQueue.grantSendMessages(orchestratorLambda);
+        exportRequestQueue.grantSendMessages(orchestratorLambda);
         if (mockCapabilityQueue) {
             mockCapabilityQueue.grantSendMessages(orchestratorLambda);
         }
-        
         orchestratorLambda.addToRolePolicy(new iam.PolicyStatement({
             actions: ['iam:PassRole'],
             resources: [schedulerRole.roleArn],
@@ -255,42 +234,33 @@ export class CchWorkflowOrchestratorStack extends Stack {
             actions: ['scheduler:CreateSchedule', 'scheduler:UpdateSchedule', 'scheduler:DeleteSchedule', 'scheduler:GetSchedule'],
             resources: [`arn:aws:scheduler:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:schedule/${schedulerGroupName}/*`],
         }));
-        
-        Object.values(capabilityEnvVars).forEach((queueUrl) => {
-            if (mockCapabilityQueue && queueUrl === mockCapabilityQueue.queueUrl) {
-                return;
+        if (authorizedServicesList) {
+            const authorizedServices = authorizedServicesList.split(',').map(s => s.trim()).filter(s => s);
+            if (authorizedServices.length > 0) {
+                commandQueue.addToResourcePolicy(new iam.PolicyStatement({
+                    sid: 'AllowAuthorizedServicesToSendMessages',
+                    effect: iam.Effect.ALLOW,
+                    principals: authorizedServices.map(arn => new iam.ArnPrincipal(arn)),
+                    actions: ['sqs:SendMessage'],
+                    resources: [commandQueue.queueArn],
+                }));
             }
-            const queue = sqs.Queue.fromQueueArn(this, `CapabilityQueue-${queueUrl}`, cdk.Fn.importValue(queueUrl));
-            if (queue) {
-               (orchestratorLambda.role as iam.Role).addToPrincipalPolicy(
-                    new iam.PolicyStatement({
-                        actions: ['sqs:SendMessage'],
-                        resources: [queue.queueArn],
-                    }),
-                );
-            }
-        });
+        }
 
+        // --- Log Retention & Outputs ---
         new logs.LogRetention(this, 'OrchestratorLogRetention', {
             logGroupName: orchestratorLambda.logGroup.logGroupName,
             retention: logs.RetentionDays.ONE_WEEK,
         });
-
-        new cdk.CfnOutput(this, 'OrchestratorCommandQueueUrl', {
-            value: commandQueue.queueUrl,
-            description: 'The URL of the central command queue for the orchestrator.',
-        });
-        new cdk.CfnOutput(this, 'WorkflowStateTableName', {
-            value: stateTable.tableName,
-            description: 'The name of the DynamoDB table for storing workflow state.',
-        });
-        new cdk.CfnOutput(this, 'DefinitionsBucketName', {
-            value: definitionsBucket.bucketName,
-            description: 'The name of the S3 bucket for storing workflow definitions.',
-        });
-        new cdk.CfnOutput(this, 'IngestBucketName', {
-            value: eventdataBucket.bucketName,
-            description: 'The name of the S3 bucket for ingesting event data.',
-        });
+        if (mockServiceLambda) {
+            new logs.LogRetention(this, 'MockServiceLogRetention', {
+                logGroupName: mockServiceLambda.logGroup.logGroupName,
+                retention: logs.RetentionDays.ONE_DAY,
+            });
+        }
+        new cdk.CfnOutput(this, 'OrchestratorCommandQueueUrl', { value: commandQueue.queueUrl });
+        new cdk.CfnOutput(this, 'WorkflowStateTableName', { value: stateTable.tableName });
+        new cdk.CfnOutput(this, 'DefinitionsBucketName', { value: definitionsBucket.bucketName });
+        new cdk.CfnOutput(this, 'IngestBucketName', { value: eventdataBucket.bucketName });
     }
 }
