@@ -88,10 +88,7 @@ class EnvironmentManager:
             str(self.output_file),
             # Add test context to ensure test-only resources are created
             "-c",
-            "test=true",
-            # Ensure we build the lambda from source, not a pipeline ECR image
-            "-c",
-            "image_uri=",
+            "test=true"
         ]
         if profile:
             command.extend(["--profile", profile])

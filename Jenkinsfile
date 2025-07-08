@@ -8,7 +8,7 @@ def parameterMap = [
   description: "The project contains all code & infra configuration (that isn't in the general infrastructure-repo) specific for cch workflow orchestrator.",
   buildSubPath: "workflow-orchestrator/src",
   deploySubPath: "workflow-orchestrator/cdk",
-  imageTag: "${env.BRANCH_NAME}-${env.BUILD_ID}".replaceAll("[^A-Za-z0-9]+", "-").toLowerCase()
+  env: env
 ]
 
 def config = [
@@ -24,4 +24,4 @@ node {
     config = mergeConfiguration(config, parameterMap)
 }
 
-npeDeployPipeline(config)
+tradePipeline(config)

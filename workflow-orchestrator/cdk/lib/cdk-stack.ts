@@ -29,9 +29,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
         // --- Context and Environment Variables ---
         const env = this.node.tryGetContext('env') || process.env.ENVIRONMENT || 'st';
         const owner = this.node.tryGetContext('owner') || process.env.CCH_OWNER || 'userid';
-        const imageUri = this.node.tryGetContext('image_uri');
         const isTestEnv = props?.isTestEnv ?? (this.node.tryGetContext('test') === 'true');
-        const orgLevel3 = process.env.NIKE_ORG_L3 || 'trade-customs-compliance-hub';
         const authorizedServicesList = process.env.AUTHORIZED_COMMAND_QUEUE_SENDERS || '';
         const testExecutorArn = process.env.TEST_EXECUTOR_ARN;
 
@@ -43,13 +41,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
         });
 
         // --- Tags ---
-        Tags.of(this).add('nike-owner', process.env.NIKE_OWNER || 'stijn.liesenborghs@nike.com');
-        Tags.of(this).add('nike-distributionlist', process.env.NIKE_DL || 'Lst-gt.scpt.tt.trade.all@Nike.com');
-        Tags.of(this).add('nike-environment', env);
-        Tags.of(this).add('nike-org-level1', 'scpt');
-        Tags.of(this).add('nike-org-level2', 'trade-transportation');
-        Tags.of(this).add('nike-org-level3', orgLevel3);
-        Tags.of(this).add('nike-owner-id', owner);
+        Tags.of(this).add('nike-tagguid', `${process.env.NIKE_TAGGUID}`);
         this.templateOptions.description = "Stack for the CCH Workflow Orchestrator";
 
         // --- Resource Naming ---
@@ -192,11 +184,11 @@ export class CchWorkflowOrchestratorStack extends Stack {
         };
 
         let orchestratorLambda: lambda.Function;
-        if (imageUri) {
-            const repository = ecr.Repository.fromRepositoryArn(this, 'EcrRepository', `arn:aws:ecr:${this.region}:${this.account}:repository/${mainPrefix}`);
+        if (process.env.SERVICE_NAME && process.env.SERVICE_VERSION) {
+            const repository = ecr.Repository.fromRepositoryName(this, "EcrRepository", process.env.SERVICE_NAME || '');
             orchestratorLambda = new lambda.DockerImageFunction(this, 'OrchestratorLambda', {
                 functionName: `${mainPrefix}-lambda-${env}${ownerSuffix}`,
-                code: lambda.DockerImageCode.fromEcr(repository, { tagOrDigest: imageUri }),
+                code: lambda.DockerImageCode.fromEcr(repository, { tagOrDigest: process.env.SERVICE_VERSION || ''}),
                 memorySize: 1024,
                 environment: commonLambdaEnv,
                 timeout: Duration.seconds(300),
