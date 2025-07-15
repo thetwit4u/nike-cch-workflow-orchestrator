@@ -17,6 +17,8 @@ import {
 import * as python from '@aws-cdk/aws-lambda-python-alpha';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as path from 'path';
+import {ISecurityGroup, ISubnet, SecurityGroup, Subnet, Vpc} from "aws-cdk-lib/aws-ec2";
+
 
 interface CchWorkflowOrchestratorStackProps extends StackProps {
     isTestEnv?: boolean;
@@ -48,6 +50,34 @@ export class CchWorkflowOrchestratorStack extends Stack {
         const ownerSuffix = owner ? `-${owner}` : '';
         const mainPrefix = 'cch-flow-orchestrator';
         const definitionsBucketPrefix = 'cch-flow-definitions';
+
+        // Resolve VPC from vpcId
+        const vpc = Vpc.fromLookup(this, 'Vpc', { vpcId: (process.env.VPC_ID || '') });
+
+        // Resolve subnets from subnetIds
+        const subnets: ISubnet[] = (process.env.NON_ROUTABLE_SUBNETS?.split(',') || []).map((subnetId, idx) =>
+            Subnet.fromSubnetId(this, `Subnet${idx}`, subnetId)
+        );
+
+        // Resolve security groups from securityGroupIds
+        const securityGroups: ISecurityGroup[] = ([process.env.DEFAULT_SECURITY_GROUP || '']).map((sgId, idx) =>
+            SecurityGroup.fromSecurityGroupId(this, `SG${idx}`, sgId)
+        );
+
+        const logGroup = new logs.LogGroup(this, 'LogGroup', {
+            logGroupName: `/aws/lambda/${process.env.SERVICE_NAME || ''}`,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+            retention: logs.RetentionDays.ONE_WEEK
+        });
+
+        const role = new iam.Role(this, 'LambdaExecutionRole', {
+            assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+            managedPolicies: [
+                iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+                iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaVPCAccessExecutionRole')
+            ],
+            roleName: `${mainPrefix}-${env}-${cdk.Aws.REGION}`
+        });
 
         // --- SQS Queues ---
         const commandQueue = new sqs.Queue(this, 'OrchestratorCommandQueue', {
@@ -181,6 +211,13 @@ export class CchWorkflowOrchestratorStack extends Stack {
             LOG_LEVEL: 'INFO',
             ...capabilityEnvVars,
             VERSION: new Date().toISOString(),
+            OTEL_EXPORTER_OTLP_ENDPOINT: `https://otel-collector-${cdk.Aws.REGION}.${process.env.HOSTED_ZONE_NAME || ''}:4318`,
+            OTEL_SERVICE_NAME: process.env.SERVICE_NAME || '',
+            OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
+            OTEL_LOGS_EXPORTER: 'otlp',
+            OTEL_METRICS_EXPORTER: 'none',
+            OTEL_TRACES_EXPORTER: 'otlp',
+            OTEL_PROPAGATORS: 'tracecontext'
         };
 
         let orchestratorLambda: lambda.Function;
@@ -189,15 +226,25 @@ export class CchWorkflowOrchestratorStack extends Stack {
             orchestratorLambda = new lambda.DockerImageFunction(this, 'OrchestratorLambda', {
                 functionName: `${mainPrefix}-lambda-${env}${ownerSuffix}`,
                 code: lambda.DockerImageCode.fromEcr(repository, { tagOrDigest: process.env.SERVICE_VERSION || ''}),
+                role: role,
+                vpc,
+                vpcSubnets: { subnets },
+                securityGroups,
+                logGroup: logGroup,
                 memorySize: 1024,
                 environment: commonLambdaEnv,
-                timeout: Duration.seconds(300),
+                timeout: Duration.seconds(300)
             });
         } else {
             orchestratorLambda = new python.PythonFunction(this, 'OrchestratorLambda', {
                 functionName: `${mainPrefix}-lambda-${env}${ownerSuffix}`,
                 entry: path.join(__dirname, '../../src'),
                 runtime: lambda.Runtime.PYTHON_3_13,
+                role: role,
+                vpc,
+                vpcSubnets: { subnets },
+                securityGroups,
+                logGroup: logGroup,
                 index: 'app.py',
                 handler: 'handler',
                 memorySize: 1024,

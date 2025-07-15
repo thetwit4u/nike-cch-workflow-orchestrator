@@ -8,7 +8,8 @@ def parameterMap = [
   description: "The project contains all code & infra configuration (that isn't in the general infrastructure-repo) specific for cch workflow orchestrator.",
   buildSubPath: "workflow-orchestrator/src",
   deploySubPath: "workflow-orchestrator/cdk",
-  env: env
+  env: env,
+  skipZipCopyArtifacts: true
 ]
 
 def config = [
