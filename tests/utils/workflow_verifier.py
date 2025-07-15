@@ -22,7 +22,10 @@ class WorkflowVerifier:
         self.table_name = table_name
 
     def _decode_checkpoint(self, item: dict) -> dict:
-        """Decodes the msgpack-encoded checkpoint data from a DynamoDB item."""
+        """
+        Decodes the msgpack-encoded checkpoint data from a DynamoDB item
+        and extracts the core 'channel_values' which represent the workflow state.
+        """
         if 'checkpoint' not in item:
             logger.warning("No 'checkpoint' field found in the DynamoDB item.")
             return {}
@@ -35,8 +38,15 @@ class WorkflowVerifier:
         try:
             # We need to set use_list=False because langgraph serializes tuples,
             # and the default is to deserialize them as lists.
-            decoded_state = msgpack.unpackb(checkpoint_bytes, raw=False)
-            return decoded_state
+            full_checkpoint = msgpack.unpackb(checkpoint_bytes, raw=False)
+            
+            logger.info("--- RAW CHECKPOINT DUMP ---")
+            logger.info(full_checkpoint)
+            logger.info("--------------------------")
+
+            # The actual state is nested inside 'channel_values'
+            state_channels = full_checkpoint.get("channel_values", {})
+            return state_channels
         except Exception as e:
             logger.error(f"Failed to decode msgpack checkpoint: {e}")
             return {}
@@ -120,13 +130,15 @@ class WorkflowVerifier:
                     time.sleep(interval_seconds)
                     continue
                 
-                logger.info(f"Polling... Current decoded state: {decoded_state.get('channel_values')}")
+                logger.info(f"Polling... Current decoded state: {decoded_state}")
                 
                 try:
                     # We pass the full decoded state to the condition function
-                    if condition_fn(decoded_state.get('channel_values', {})):
+                    condition_result = condition_fn(decoded_state)
+                    logger.info(f"Polling condition result: {condition_result}")
+                    if condition_result:
                         logger.info("Final state condition met.")
-                        return decoded_state.get('channel_values')
+                        return decoded_state
                 except Exception as e:
                     logger.warning(f"Condition function raised an exception: {e}. Continuing to poll.")
             
@@ -136,6 +148,55 @@ class WorkflowVerifier:
         logger.error(f"Timeout reached after {timeout_seconds} seconds. Condition never met.")
         # ... (rest of the debugging dump logic can be similar to poll_for_state_update)
         return None
+
+    def poll_for_specific_node(self, thread_id: str, node_name: str, timeout_seconds: int = 60, interval_seconds: int = 5) -> dict | None:
+        """
+        Polls the DynamoDB table until the workflow reaches a specific node.
+
+        Args:
+            thread_id: The ID of the workflow thread to check.
+            node_name: The name of the node to wait for.
+            timeout_seconds: The maximum time to wait.
+            interval_seconds: The interval between polls.
+
+        Returns:
+            The state dictionary if the node was reached, otherwise None.
+        """
+        logger.info(f"Polling for node '{node_name}' for thread_id '{thread_id}'...")
+        
+        def condition_fn(state):
+            # When a langgraph is paused, the name of the next node to be executed
+            # (which is the node we are waiting for) is in the '__next__' channel
+            # or in a branch-specific key.
+            next_nodes = state.get('__next__') # for interruptions
+            
+            # The 'current_node' is set by our custom logic when a node completes
+            current_node = state.get("context", {}).get("current_node")
+
+            if current_node == node_name:
+                return True
+
+            # Check if the next node to run is the one we're waiting for.
+            # This handles async pauses and event waits.
+            if next_nodes and isinstance(next_nodes, (list, tuple)):
+                # The node name might have a UID suffix, so we check the prefix.
+                if next_nodes[0].startswith(node_name):
+                    return True
+            
+            # Also check for the branching syntax LangGraph uses
+            branch_key = f"branch:to:{node_name}"
+            if branch_key in state:
+                return True
+
+            return False
+
+        final_state = self.poll_for_final_state(
+            thread_id,
+            condition_fn,
+            timeout_seconds,
+            interval_seconds
+        )
+        return final_state
 
     def get_latest_state(self, thread_id: str) -> dict:
         """

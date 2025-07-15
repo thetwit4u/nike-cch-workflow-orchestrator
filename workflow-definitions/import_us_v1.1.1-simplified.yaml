@@ -4,8 +4,8 @@ workflow_id: "import_us_v1_simplified"
 entry_point: Create_Filing_Packs
 
 initial_context:
-  - deliverySetId
-  - deliverySetURI
+  - consignmentId
+  - consignmentURI
 
 nodes:
   Create_Filing_Packs:
@@ -13,13 +13,11 @@ nodes:
     title: "Create Filing Packs with Enrichment"
     capability_id: "import#create_filingpacks"
     input_keys:
-      - "deliverySetId"
-      - "deliverySetURI"
+      - "consignmentId"
+      - "consignmentURI"
     request_output_keys:
-      - "deliverySetImportEnrichedId"
-      - "deliverySetImportEnrichedURI"
-      - "deliverySetImportEnrichedStatus"
-      - "deliverySetImportEnrichedError"
+      - "consignmentImportEnrichedId"
+      - "consignmentImportEnrichedURI"
       - "importFilingPacksStatus"
       - "importFilingPacksError"
       - "importFilingPacks"

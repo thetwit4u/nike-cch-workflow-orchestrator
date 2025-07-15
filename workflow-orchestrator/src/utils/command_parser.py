@@ -62,28 +62,32 @@ class CommandParser:
 
     def create_command_message(self, command_type: str) -> dict:
         """
-        Creates a command message to be sent to an external capability.
+        Creates a command message to be sent to an external capability,
+        conforming to the new flattened schema.
         """
-        header = {
-            "workflowInstanceId": self.state["context"].get("workflowInstanceId"),
-            "correlationId": self.state["context"].get("correlationId"),
-            "commandId": str(uuid.uuid4()),
-            "replyToQueueUrl": os.environ.get("COMMAND_QUEUE_URL"),
+        context_data = self.state["context"]
+        
+        # Base command structure
+        command_msg = {
+            "workflowInstanceId": context_data.get("workflowInstanceId"),
+            "correlationId": context_data.get("correlationId"),
+            "workflowDefinitionURI": context_data.get("workflow_definition_uri"),
+            "command": {
+                "type": command_type, # e.g., 'ASYNC_REQ' - though not in schema, it's a valid internal type
+                "id": str(uuid.uuid4()),
             "source": "WorkflowOrchestrator",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-
-        # Add routing hint for parallel branches
-        if self.state["context"].get("branch_key"):
-            header["routingHint"] = {"branchKey": self.state["context"]["branch_key"]}
-
-        body = {
             "capability_id": self.node_config.get("capability_id"),
             "context": self._extract_keys(self.node_config.get("input_keys")),
-            "request_output_keys": self.node_config.get("request_output_keys"),
+                "request_output_keys": self.node_config.get("request_output_keys")
+            }
         }
-
-        return {"header": header, "body": body}
+        
+        # Add routing hint for parallel branches if applicable
+        if context_data.get("branch_key"):
+            command_msg["command"]["routingHint"] = {"branchKey": context_data.get("branch_key")}
+            
+        return command_msg
 
     def create_internal_command(self, command_type: str, state_update: dict, next_command: dict) -> dict:
         """

@@ -1,6 +1,7 @@
 # Cursor
 .cursor/*
 .cursor/
+.windsurfrules
 *.code-workspace
 refprojects/
 docs/

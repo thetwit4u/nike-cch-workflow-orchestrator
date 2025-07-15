@@ -11,9 +11,8 @@ logger = logging.getLogger(__name__)
 
 # The local data that will be uploaded to S3 for the test
 HAPPY_PATH_DATA = {
-    "deliverySet": {
-        "deliverySetId": str(uuid.uuid4()),
         "consignment": {
+        "consignmentId": str(uuid.uuid4()),
             "billOfLadingNbr": "TESTBOL12345",
             "plannedDischargeDate": "2025-07-15T10:00:00Z",
             "totalShipmentCount": 1,
@@ -92,19 +91,16 @@ HAPPY_PATH_DATA = {
                 ]
             }
         ]
-    }
 }
 
 ERROR_PATH_DATA = {
-    "deliverySet": {
-        "deliverySetId": str(uuid.uuid4()),
         "consignment": {
+        "consignmentId": str(uuid.uuid4()),
             "billOfLadingNbr": "ERRORBOL12345",
             "plannedDischargeDate": "invalid-date-format",
             "totalShipmentCount": 1
         },
         "deliveries": []
-    }
 }
 
 @pytest.fixture(scope="module")
@@ -144,8 +140,8 @@ def test_merged_workflow_happy_path(aws_client, cdk_outputs, stack_name, workflo
     aws_client.upload_to_s3(local_filepath, definitions_bucket, s3_workflow_key)
     workflow_definition_uri = f"s3://{definitions_bucket}/{s3_workflow_key}"
     
-    # 2. Extract deliverySetId from the test data
-    delivery_set_id = HAPPY_PATH_DATA["deliverySet"]["deliverySetId"]
+    # 2. Extract consignmentId from the test data
+    consignment_id = HAPPY_PATH_DATA["consignment"]["consignmentId"]
     
     # 3. Prepare the START command
     command_queue_url = cdk_outputs.get_output(stack_name, "OrchestratorCommandQueueUrl")
@@ -158,9 +154,10 @@ def test_merged_workflow_happy_path(aws_client, cdk_outputs, stack_name, workflo
             "id": str(uuid.uuid4()),
             "source": "Pytest-MergedHappyPath",
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "SUCCESS", # Add required status field
             "payload": {
-                "deliverySetId": delivery_set_id,
-                "deliverySetURI": happy_path_s3_uri,
+                "consignmentId": consignment_id,
+                "consignmentURI": happy_path_s3_uri,
                 "_no_cache": True
             }
         }
@@ -183,15 +180,12 @@ def test_merged_workflow_happy_path(aws_client, cdk_outputs, stack_name, workflo
     assert final_context.get("current_node") == "End_Workflow"
     
     # Verify that the merged step outputs are present in the data field
-    assert "deliverySetImportEnrichedId" in final_data
-    assert "deliverySetImportEnrichedURI" in final_data
-    assert "deliverySetImportEnrichedStatus" in final_data
-    assert "importFilingPacksStatus" in final_data
+    assert "consignmentImportEnrichedId" in final_data
+    assert "consignmentImportEnrichedURI" in final_data
     assert "importFilingPacks" in final_data
     
-    # Verify the merged step was successful
-    assert final_data.get("deliverySetImportEnrichedStatus") == "SUCCESS"
-    assert final_data.get("importFilingPacksStatus") == "SUCCESS"
+    # Verify the step was successful using the new standard status field
+    assert final_data.get("status") == "COMPLETED"
     
     logger.info("Successfully verified merged workflow happy path completion with both enrichment and filing pack creation.")
 
@@ -203,15 +197,15 @@ def test_merged_workflow_error_path(aws_client, cdk_outputs, stack_name, workflo
     # --- ARRANGE ---
     thread_id = f"test-merged-error-{uuid.uuid4()}"
     
-    # 1. Upload the workflow definition
+    # 1. Upload the workflow definition designed for error handling
     definitions_bucket = cdk_outputs.get_output(stack_name, "DefinitionsBucketName")
-    local_filepath = "workflow-definitions/import_us_v1.1.1-simplified.yaml"
+    local_filepath = "workflow-definitions/import_us_v1.1.1-simplified-errorhandling.yaml"
     s3_workflow_key = os.path.basename(local_filepath)
     aws_client.upload_to_s3(local_filepath, definitions_bucket, s3_workflow_key)
     workflow_definition_uri = f"s3://{definitions_bucket}/{s3_workflow_key}"
     
-    # 2. Extract deliverySetId from the test data
-    delivery_set_id = ERROR_PATH_DATA["deliverySet"]["deliverySetId"]
+    # 2. Extract consignmentId from the test data
+    consignment_id = ERROR_PATH_DATA["consignment"]["consignmentId"]
     
     # 3. Prepare the START command
     command_queue_url = cdk_outputs.get_output(stack_name, "OrchestratorCommandQueueUrl")
@@ -224,9 +218,10 @@ def test_merged_workflow_error_path(aws_client, cdk_outputs, stack_name, workflo
             "id": str(uuid.uuid4()),
             "source": "Pytest-MergedErrorPath",
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "SUCCESS", # The event itself is successful
             "payload": {
-                "deliverySetId": delivery_set_id,
-                "deliverySetURI": error_path_s3_uri,
+                "consignmentId": consignment_id,
+                "consignmentURI": error_path_s3_uri,
                 "_no_cache": True
             }
         }
@@ -248,8 +243,9 @@ def test_merged_workflow_error_path(aws_client, cdk_outputs, stack_name, workflo
     final_context = final_state.get("context", {})
     assert final_context.get("current_node") == "End_Workflow"
     
-    # Verify that error information is captured
-    assert "deliverySetImportEnrichedError" in final_context or "filingPacksError" in final_context
+    # Verify that error information is captured in the final data
+    final_data = final_state.get("data", {})
+    assert "importFilingPacksError" in final_data
     
     logger.info("Successfully verified that the merged workflow error path completes correctly.")
 
@@ -281,9 +277,10 @@ def test_merged_workflow_missing_s3_file(aws_client, cdk_outputs, stack_name, wo
             "id": str(uuid.uuid4()),
             "source": "Pytest-MergedMissingS3",
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "SUCCESS", # Add required status field
             "payload": {
-                "deliverySetId": str(uuid.uuid4()),
-                "deliverySetURI": non_existent_s3_uri,
+                "consignmentId": str(uuid.uuid4()),
+                "consignmentURI": non_existent_s3_uri,
                 "_no_cache": True
             }
         }
@@ -321,8 +318,8 @@ def test_merged_workflow_performance(aws_client, cdk_outputs, stack_name, workfl
     aws_client.upload_to_s3(local_filepath, definitions_bucket, s3_workflow_key)
     workflow_definition_uri = f"s3://{definitions_bucket}/{s3_workflow_key}"
     
-    # 2. Extract deliverySetId from the test data
-    delivery_set_id = HAPPY_PATH_DATA["deliverySet"]["deliverySetId"]
+    # 2. Extract consignmentId from the test data
+    consignment_id = HAPPY_PATH_DATA["consignment"]["consignmentId"]
     
     # 3. Prepare the START command
     command_queue_url = cdk_outputs.get_output(stack_name, "OrchestratorCommandQueueUrl")
@@ -335,9 +332,10 @@ def test_merged_workflow_performance(aws_client, cdk_outputs, stack_name, workfl
             "id": str(uuid.uuid4()),
             "source": "Pytest-MergedPerformance",
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "SUCCESS", # Add required status field
             "payload": {
-                "deliverySetId": delivery_set_id,
-                "deliverySetURI": happy_path_s3_uri,
+                "consignmentId": consignment_id,
+                "consignmentURI": happy_path_s3_uri,
                 "_no_cache": True
             }
         }
@@ -364,8 +362,8 @@ def test_merged_workflow_performance(aws_client, cdk_outputs, stack_name, workfl
     
     # Verify successful completion
     final_context = final_state.get("context", {})
+    final_data = final_state.get("data", {})
     assert final_context.get("current_node") == "End_Workflow"
-    assert final_context.get("deliverySetImportEnrichedStatus") == "SUCCESS"
-    assert final_context.get("importFilingPacksStatus") == "SUCCESS"
+    assert final_data.get("status") == "COMPLETED"
     
     logger.info("Successfully verified merged workflow performance.")

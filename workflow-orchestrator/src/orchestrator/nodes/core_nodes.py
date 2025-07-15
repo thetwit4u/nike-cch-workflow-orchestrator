@@ -2,8 +2,17 @@ import logging
 from orchestrator.state import WorkflowState
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langchain_core.runnables import RunnableConfig
+from langgraph.types import interrupt
 
 logger = logging.getLogger(__name__)
+
+def handle_event_wait(state: WorkflowState, node_config: dict, node_name: str):
+    """
+    Handles an 'event_wait' node by pausing graph execution.
+    The workflow will wait for an external command (e.g., HITL_RESP) to resume.
+    """
+    logger.info(f"Executing 'event_wait' node '{node_name}'. Pausing for external event.")
+    return interrupt("Pausing for external event.")
 
 def pass_through_action(state: WorkflowState) -> WorkflowState:
     """A no-op action for nodes that only perform routing."""
@@ -96,7 +105,7 @@ def handle_register_branch(state: WorkflowState, config: RunnableConfig, checkpo
 
     return state
 
-def handle_log_error(state: WorkflowState, node_config: dict, node_name: str) -> WorkflowState:
+def handle_log_error(state: WorkflowState, node_config: dict, node_name: str) -> dict:
     """
     Node handler for the 'log_error' type.
 
@@ -109,7 +118,7 @@ def handle_log_error(state: WorkflowState, node_config: dict, node_name: str) ->
         message_key = node_config.get("message_from_context_key")
 
         # Prioritize the dynamic message from the state if available
-        error_details = state.get("error_details", {})
+        error_details = state.get("error_details") or {}
         dynamic_message = error_details.get(message_key) if message_key else None
         
         message = dynamic_message or error_details.get("error") or default_message
@@ -125,18 +134,21 @@ def handle_log_error(state: WorkflowState, node_config: dict, node_name: str) ->
         # The logger adapter will add the workflow_id to the log record
         logger.error(log_payload)
 
-        # Clear the error state now that it has been handled
-        state["is_error"] = False
-        state["error_details"] = None
+        # Return a patch to clear the error state
+        return {
+            "is_error": False,
+            "error_details": None
+        }
 
     except Exception as e:
         # If the error logger itself fails, log a critical error
         logger.critical(f"CRITICAL: Failed to execute handle_log_error node '{node_name}'. Error: {e}")
-        # We still clear the state to prevent potential loops
-        state["is_error"] = False
-        state["error_details"] = None
+        # We still return a patch to clear the state and prevent potential loops
+        return {
+            "is_error": False,
+            "error_details": None
+        }
 
-    return state
 
 def handle_set_state(state: WorkflowState, node_config: dict, node_name: str) -> dict:
     """
@@ -165,6 +177,11 @@ def set_state_node_wrapper(state: WorkflowState, node_config: dict, node_name: s
     """
     logger.info(f"Executing set_state node '{node_name}'.")
     static_outputs = node_config.get('static_outputs', {}).copy()
+
+    # Implicitly set status to COMPLETED for any 'end' node.
+    # This ensures consistent, predictable behavior for workflow termination.
+    if node_config.get('type') == 'end':
+        static_outputs['status'] = 'COMPLETED'
     
     # The outputs are merged into the 'data' channel of the state.
     # The current_node tracking is merged into the 'context' channel.
@@ -172,6 +189,7 @@ def set_state_node_wrapper(state: WorkflowState, node_config: dict, node_name: s
         "data": static_outputs,
         "context": {"current_node": node_name}
     }
+
 
 def sync_capability_node_wrapper(state: dict, handler, node_config: dict, node_name: str) -> dict:
     """
