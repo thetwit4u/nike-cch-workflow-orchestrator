@@ -27,7 +27,7 @@ def load_schema(schema_path: str):
         return None
 
 # Load the generic command schema from its new location
-COMMAND_SCHEMA = load_schema('command/orchestrator/generic-command.schema.json')
+COMMAND_SCHEMA = load_schema('command/orchestrator/orchestrator-command.schema.json')
 # --- End of new schema loading logic ---
 
 class CommandParser:

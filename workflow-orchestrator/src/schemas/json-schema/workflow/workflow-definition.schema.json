@@ -8,7 +8,7 @@
     "schema_version": {
       "type": "string",
       "description": "The semantic version of this workflow definition schema.",
-      "const": "1.1.2"
+      "const": "1.1.0"
     },
     "workflow_name": {
       "type": "string",
@@ -47,7 +47,7 @@
         "on_failure": { "type": "string", "description": "Node to transition to on failure." },
         "type": {
           "type": "string",
-          "enum": ["sync_call", "async_request", "condition", "fork", "join", "end_branch", "end", "library_call", "scheduled_request", "map_fork", "event_wait", "log_error", "set_state"]
+          "enum": ["sync_call", "async_request", "condition", "fork", "join", "end_branch", "end", "library_call", "scheduled_request", "map_fork", "event_wait", "log_error"]
         }
       },
       "required": ["type"],
@@ -63,8 +63,7 @@
         { "$ref": "#/definitions/scheduledRequestNode" },
         { "$ref": "#/definitions/mapForkNode" },
         { "$ref": "#/definitions/eventWaitNode" },
-        { "$ref": "#/definitions/logErrorNode" },
-        { "$ref": "#/definitions/setStateNode" }
+        { "$ref": "#/definitions/logErrorNode" }
       ]
     },
     "baseCallNode": {
@@ -164,24 +163,13 @@
       "type": "object",
       "properties": {
         "type": { "const": "event_wait" },
-        "on_success": { "type": "string", "description": "The node to transition to when any external command resumes the workflow." }
+        "event_key": { "type": "string", "description": "The key the orchestrator will wait for to appear in the context." },
+        "on_event": { "type": "string", "description": "The node to transition to once the event key is received." }
       },
-      "required": ["on_success"]
+      "required": ["event_key", "on_event"]
     },
     "endBranchNode": { "type": "object", "properties": { "type": { "const": "end_branch" } } },
     "endNode": { "type": "object", "properties": { "type": { "const": "end" } } },
-    "setStateNode": {
-      "type": "object",
-      "properties": {
-        "type": { "const": "set_state" },
-        "static_outputs": {
-          "type": "object",
-          "description": "A map of key-value pairs to merge directly into the workflow's data context."
-        },
-        "on_success": { "type": "string", "description": "The node to transition to after setting the state." }
-      },
-      "required": ["static_outputs", "on_success"]
-    },
     "scheduleParameters": {
       "type": "object",
       "properties": {

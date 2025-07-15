@@ -1,0 +1,25 @@
+{
+  "header": {
+    "workflowInstanceId": "728f31d9-4f18-49b1-bfc1-3585ccec042d",
+    "workflowDefinitionURI": "s3://cch-flow-controller-definitions-st-us-east-1/import_us_v1_simplified.yaml",
+    "correlationId": "CMAU7116574-CMDUDJA1345731",
+    "commandId": "cmd-create-filingpacks-9g8h",
+    "replyToQueueUrl": "https://sqs.eu-west-1.amazonaws.com/123456789012/cch-flow-orchestrator-command-queue",
+    "source": "WorkflowOrchestrator",
+    "timestamp": "2025-06-25T15:30:00.767+00:00"
+  },
+  "body": {
+    "capability_id": "import#create_filingpacks",
+    "request_output_keys": [
+      "consignmentEnrichedId",
+      "consignmentEnrichedURI",
+      "importFilingPacksStatus",
+      "importFilingPacksError",
+      "importFilingPacks"
+    ],
+    "context": {
+        "consignmentId": "84ab4a4f-7d85-415a-a0fd-dffc41204bcd",
+        "consignmentURI": "s3://import-test/CMAU7116574-CMDUDJA1345731/consignment.json"
+    }
+  }
+}

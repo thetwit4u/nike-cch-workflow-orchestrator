@@ -154,7 +154,7 @@ def test_merged_workflow_happy_path(aws_client, cdk_outputs, stack_name, workflo
             "id": str(uuid.uuid4()),
             "source": "Pytest-MergedHappyPath",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "status": "SUCCESS", # Add required status field
+
             "payload": {
                 "consignmentId": consignment_id,
                 "consignmentURI": happy_path_s3_uri,
@@ -218,7 +218,7 @@ def test_merged_workflow_error_path(aws_client, cdk_outputs, stack_name, workflo
             "id": str(uuid.uuid4()),
             "source": "Pytest-MergedErrorPath",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "status": "SUCCESS", # The event itself is successful
+
             "payload": {
                 "consignmentId": consignment_id,
                 "consignmentURI": error_path_s3_uri,
@@ -277,7 +277,7 @@ def test_merged_workflow_missing_s3_file(aws_client, cdk_outputs, stack_name, wo
             "id": str(uuid.uuid4()),
             "source": "Pytest-MergedMissingS3",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "status": "SUCCESS", # Add required status field
+
             "payload": {
                 "consignmentId": str(uuid.uuid4()),
                 "consignmentURI": non_existent_s3_uri,
@@ -332,7 +332,7 @@ def test_merged_workflow_performance(aws_client, cdk_outputs, stack_name, workfl
             "id": str(uuid.uuid4()),
             "source": "Pytest-MergedPerformance",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "status": "SUCCESS", # Add required status field
+
             "payload": {
                 "consignmentId": consignment_id,
                 "consignmentURI": happy_path_s3_uri,

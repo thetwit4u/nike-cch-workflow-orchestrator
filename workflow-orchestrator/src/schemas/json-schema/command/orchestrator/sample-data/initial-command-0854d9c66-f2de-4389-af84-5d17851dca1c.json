@@ -1,0 +1,16 @@
+{
+    "workflowInstanceId": "728f31d9-4f18-49b1-bfc1-3585ccec042d",
+    "workflowName": "Import US Workflow",
+    "correlationId": "CMAU7116574-CMDUDJA1345731",
+    "workflowDefinitionURI": "s3://cch-flow-controller-definitions-st-us-east-1/import_us_v1_simplified.yaml",
+    "command": {
+        "type": "EVENT",
+        "id": "854d9c66-f2de-4389-af84-5d17851dca1c",
+        "source": "TradeFlowController",
+        "timestamp": "2025-06-25T15:28:17.767+00:00",
+        "payload": {
+            "consignmentId": "84ab4a4f-7d85-415a-a0fd-dffc41204bcd",
+            "consignmentURI": "s3://cch-flow-controller-deliveries-test/CMAU7116574-CMDUDJA1345731/consignment.json"
+        }
+    }
+}

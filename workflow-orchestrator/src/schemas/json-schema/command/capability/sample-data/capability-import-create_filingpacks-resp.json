@@ -1,0 +1,27 @@
+{
+  "workflowInstanceId": "728f31d9-4f18-49b1-bfc1-3585ccec042d",
+  "correlationId": "CMAU7116574-CMDUDJA1345731",
+  "workflowDefinitionURI": "s3://cch-flow-controller-definitions-st-us-east-1/import_us_v1_simplified.yaml",
+  "command": {
+    "type": "ASYNC_RESP",
+    "id": "xxxx-xxxx-xxxx-xxxx-xxxx",
+    "source": "Capability:import#enrich_deliveryset",
+    "timestamp": "2025-06-25T15:28:17.767+00:00",
+    "payload": {
+        "consignmentEnrichedId": "84ab4a4f-7d85-415a-a0fd-dffc41204bcd",
+        "consignmentEnrichedURI": "s3://import-test/CMAU7116574-CMDUDJA1345731/consignment-enriched.json",
+        "importFilingPacksStatus": "SUCCESS",
+        "importFilingPacksError": null,
+        "importFilingPacks": [
+          {
+              "filingPackId": "fpk-1234567890",
+              "filingPackURI": "s3://cch-filingpacks-dev/CMAU7116574-CMDUDJA1345731/filing-pack.json"
+          },
+          {
+              "filingPackId": "fpk-0987654321",
+              "filingPackURI": "s3://cch-filingpacks-dev/CMAU7116574-CMDUDJA1345731/filing-pack-2.json"
+          }
+      ]
+    }
+  }
+}

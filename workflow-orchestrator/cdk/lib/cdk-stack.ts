@@ -203,7 +203,12 @@ export class CchWorkflowOrchestratorStack extends Stack {
                 memorySize: 1024,
                 environment: commonLambdaEnv,
                 timeout: Duration.seconds(300),
-                bundling: { assetExcludes: ['.DS_Store', '.venv', 'tests'] },
+                bundling: {
+                    command: [
+                        'bash', '-c',
+                        'rsync -av --exclude="*.pyc" --exclude="__pycache__" . /asset-output/ && pip install -r /asset-output/requirements.txt -t /asset-output'
+                    ]
+                },
             });
         }
 

@@ -93,12 +93,12 @@ def reset_mocks():
         return jsonify({"error": "UnexpectedError", "message": str(e)}), 500
 
 # --- SQS Event Processing Logic ---
-def handle_sqs_event(event, context):
+def handle_sqs_event(event, context_aws):
     """
     Processes SQS messages from the orchestrator.
     """
-    if not ORCHESTRATOR_COMMAND_QUEUE_URL or not mock_config_table:
-        logger.error("Required environment variables for SQS handling are not set.")
+    if not ORCHESTRATOR_COMMAND_QUEUE_URL:
+        logger.error("ORCHESTRATOR_COMMAND_QUEUE_URL environment variable is not set.")
         return
 
     for record in event['Records']:
@@ -106,7 +106,6 @@ def handle_sqs_event(event, context):
             message_body = json.loads(record['body'])
             logger.info(f"Received message body: {json.dumps(message_body, indent=2)}")
 
-            # Parse the new, flatter command structure
             capability_id = message_body.get('command', {}).get('capability_id')
             context = message_body.get('command', {}).get('context', {})
 
@@ -116,84 +115,13 @@ def handle_sqs_event(event, context):
 
             logger.info(f"Processing SQS request for capability '{capability_id}'")
 
-            # --- S3 data fetching logic updated for consignmentURI ---
-            s3_data = {}
-            s3_fetch_error = None
-            if 'consignmentURI' in context:
-                try:
-                    uri = context['consignmentURI']
-                    bucket, key = uri.replace("s3://", "").split("/", 1)
-                    logger.info(f"Fetching S3 object from bucket '{bucket}' with key '{key}'")
-                    response = s3_client.get_object(Bucket=bucket, Key=key)
-                    s3_data = json.loads(response['Body'].read().decode('utf-8'))
-                except Exception as e:
-                    s3_fetch_error = e
-                    logger.error(f"Failed to fetch or parse S3 object from {uri}: {e}", exc_info=True)
-                    # Do not continue here. Instead, let the error be handled below.
-            
-            context.update(s3_data)
-            # --- End of S3 Logic ---
-            
             response_payload = {}
-            response_status = "SUCCESS" # Default to SUCCESS
+            response_status = "SUCCESS"
 
-            # Simplified logic based on BOL from the consignment object
-            consignment = context.get("consignment", {})
-            bol = consignment.get("billOfLadingNbr")
-
-            # NEW: Check for S3 fetch error first
-            if s3_fetch_error:
-                response_status = "ERROR"
-                response_payload = {
-                     "messages": [
-                        {
-                            "messageId": str(uuid.uuid4()),
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "level": "ERROR",
-                            "code": "S3_FETCH_FAILED",
-                            "summary": f"Could not retrieve S3 object from URI: {context.get('consignmentURI')}",
-                            "context": { "error": str(s3_fetch_error) }
-                        }
-                    ]
-                }
-            elif bol == "HITL-TRIGGER":
-                logger.info("HITL-TRIGGER detected. Returning HITL error response.")
-                response_status = "ERROR"
-                response_payload = {
-                    "messages": [
-                        {
-                            "messageId": str(uuid.uuid4()),
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "level": "ERROR",
-                            "code": "HITL_REQUIRED",
-                            "summary": "A recoverable error was triggered for testing.",
-                            "context": {
-                                "capabilityId": capability_id,
-                                "billOfLadingNbr": bol
-                            }
-                        }
-                    ]
-                }
-            elif bol == "NON-RECOVERABLE-ERROR":
-                logger.info("NON-RECOVERABLE-ERROR detected. Returning error response.")
-                response_status = "ERROR"
-                response_payload = {
-                    "messages": [
-                        {
-                            "messageId": str(uuid.uuid4()),
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "level": "ERROR",
-                            "code": "VALIDATION_ERROR",
-                            "summary": "A non-recoverable error was triggered for testing.",
-                            "context": {
-                                "capabilityId": capability_id,
-                                "billOfLadingNbr": bol
-                            }
-                        }
-                    ]
-                }
-            else: # This is the SUCCESS path
-                logger.info(f"No error trigger detected for BOL '{bol}'. Returning SUCCESS response.")
+            # On retry, the 'resumed_from_hitl' flag is present. Always succeed.
+            if context.get("resumed_from_hitl"):
+                logger.info("'resumed_from_hitl' is True. This is a retry. Returning SUCCESS.")
+                response_status = "SUCCESS"
                 response_payload = {
                     "consignmentImportEnrichedId": context.get("consignmentId", str(uuid.uuid4())),
                     "consignmentImportEnrichedURI": context.get("consignmentURI", "").replace(".json", "-enriched.json"),
@@ -203,7 +131,31 @@ def handle_sqs_event(event, context):
                     ]
                 }
 
-            # Construct the response message according to the new schema
+            # On initial run, the test script sends 'test_hitl_error' to force the error path.
+            elif context.get("test_hitl_error"):
+                logger.info("'test_hitl_error' is True. Returning HITL error response.")
+                response_status = "ERROR"
+                response_payload = {
+                    "messages": [{
+                        "messageId": str(uuid.uuid4()), "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "level": "ERROR", "code": "HITL_REQUIRED",
+                        "summary": "A recoverable error was triggered for testing.",
+                        "context": {"capabilityId": capability_id}
+                    }]
+                }
+            # Default case is success (for happy path tests).
+            else:
+                logger.info("No error flags detected. Returning SUCCESS for happy path.")
+                response_status = "SUCCESS"
+                response_payload = {
+                    "consignmentImportEnrichedId": context.get("consignmentId", str(uuid.uuid4())),
+                    "consignmentImportEnrichedURI": context.get("consignmentURI", "").replace(".json", "-enriched.json"),
+                    "importFilingPacks": [
+                        {"filingPackId": str(uuid.uuid4()), "status": "PENDING"},
+                        {"filingPackId": str(uuid.uuid4()), "status": "PENDING"}
+                    ]
+                }
+
             response_command = {
                 "workflowInstanceId": message_body.get("workflowInstanceId"),
                 "correlationId": message_body.get("correlationId"),
