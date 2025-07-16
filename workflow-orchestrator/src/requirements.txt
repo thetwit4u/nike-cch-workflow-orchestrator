@@ -11,3 +11,22 @@ PyYAML>=6.0
 jsonpath-ng>=1.6.0
 # For flexible date parsing
 python-dateutil>=2.8.0
+
+
+# For OTEL
+opentelemetry-sdk
+opentelemetry-instrumentation
+opentelemetry-exporter-otlp
+opentelemetry-instrumentation-asyncio==0.55b1
+opentelemetry-instrumentation-dbapi==0.55b1
+opentelemetry-instrumentation-logging==0.55b1
+opentelemetry-instrumentation-sqlite3==0.55b1
+opentelemetry-instrumentation-threading==0.55b1
+opentelemetry-instrumentation-urllib==0.55b1
+opentelemetry-instrumentation-wsgi==0.55b1
+opentelemetry-instrumentation-boto3sqs==0.55b1
+opentelemetry-instrumentation-botocore==0.55b1
+opentelemetry-instrumentation-httpx==0.55b1
+opentelemetry-instrumentation-requests==0.55b1
+opentelemetry-instrumentation-tortoiseorm==0.55b1
+opentelemetry-instrumentation-urllib3==0.55b1
