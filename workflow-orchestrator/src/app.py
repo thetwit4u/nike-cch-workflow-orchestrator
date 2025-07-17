@@ -4,40 +4,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import json
 import logging
-import asyncio
 
 from orchestrator.service import OrchestratorService
 from utils.logger import setup_logging
-from utils.command_parser import CommandParser
+from utils.telemetry import setup_telemetry
 
 from opentelemetry import trace
-from opentelemetry.instrumentation.logging import LoggingInstrumentor
-from opentelemetry.instrumentation.botocore import BotocoreInstrumentor
-from opentelemetry.instrumentation.requests import RequestsInstrumentor
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+from opentelemetry.trace import Status, StatusCode
 
-
-# Configure logging at the entry point
+# Configure logging and telemetry at the entry point
 setup_logging()
+provider, tracer = setup_telemetry()
 
-# Get a logger for this specific module
 logger = logging.getLogger(__name__)
-
-# Set up OpenTelemetry
-provider = TracerProvider()
-processor = BatchSpanProcessor(OTLPSpanExporter())
-provider.add_span_processor(processor)
-trace.set_tracer_provider(provider)
-
-
-LoggingInstrumentor().instrument(set_logging_format=True)
-BotocoreInstrumentor().instrument(tracer_provider=provider)
-RequestsInstrumentor().instrument(tracer_provider=provider)
-
 
 # Initialize service as a singleton
 orchestrator_service = OrchestratorService.get_instance()
@@ -47,36 +27,64 @@ def handler(event, context):
     Main Lambda entry point.
     Processes SQS records by passing them to the OrchestratorService.
     """
-    # The OrchestratorService's process_command is synchronous,
-    # so we don't need an async main loop here anymore.
-    logger.info(f"Received event: {json.dumps(event)}")
+    logger.info("Received event", extra={"event": event})
 
     for record in event['Records']:
-        aws_trace_header = record["attributes"]["AWSTraceHeader"]
-        tracer = trace.get_tracer("com.nike.custom-opentelemetry-instrumentation")
-        span_context = None
+        message_id = record.get('messageId', 'N/A')
+        log_extras = {
+            'message_id': message_id,
+            'event_source_arn': record.get('eventSourceARN'),
+            'invocation_id': context.aws_request_id
+        }
 
-        if aws_trace_header:
-            logger.info(f"Received AWS trace header: {aws_trace_header}")
-            traceparent = convert_aws_trace_header_to_parent_trace(aws_trace_header)
-            logger.info(f"Converted AWS trace header to traceparent: {traceparent}")
-            carrier = {"traceparent": traceparent}
-            span_context = TraceContextTextMapPropagator().extract(carrier)
-
-        with tracer.start_as_current_span(
-            "lambda_handler",
-            context=span_context
-        ):
+        if not tracer:
             try:
+                logger.info("Processing SQS record without tracing.", extra=log_extras)
                 message_body = json.loads(record['body'])
                 orchestrator_service.process_command(message_body)
-                
-            except Exception:
-                logger.exception(f"Error processing SQS record: {record.get('messageId', 'N/A')}")
-                # For now, we'll just log and continue to the next record.
-                # A DLQ should be configured on the SQS queue for production.
-                continue
-    provider.force_flush()      
+            except Exception as e:
+                logger.exception("Error processing SQS record", extra=log_extras, exc_info=e)
+            continue
+
+        # With tracing enabled
+        aws_trace_header = record.get("attributes", {}).get("AWSTraceHeader")
+        span_context = None
+        if aws_trace_header:
+            traceparent = convert_aws_trace_header_to_parent_trace(aws_trace_header)
+            carrier = {"traceparent": traceparent}
+            span_context = TraceContextTextMapPropagator().extract(carrier)
+            logger.info("Extracted trace context from SQS message", extra=log_extras)
+
+        with tracer.start_as_current_span(
+            "cch.workflow.process_record",
+            context=span_context,
+            kind=trace.SpanKind.CONSUMER
+        ) as span:
+            # Enrich span with semantic attributes
+            span.set_attribute("faas.invocation_id", context.aws_request_id)
+            span.set_attribute("messaging.system", "aws.sqs")
+            if 'eventSourceARN' in record:
+                span.set_attribute("messaging.source.name", record['eventSourceARN'])
+            if 'messageId' in record:
+                span.set_attribute("messaging.message.id", record['messageId'])
+
+            try:
+                logger.info("Processing SQS record with tracing.", extra=log_extras)
+                message_body = json.loads(record['body'])
+                span.add_event("Starting command processing", attributes={"body": record['body']})
+                orchestrator_service.process_command(message_body)
+                span.set_status(Status(StatusCode.OK, "Record processed successfully"))
+
+            except Exception as e:
+                logger.exception("Error processing SQS record", extra=log_extras, exc_info=e)
+                # Record exception in the span
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR, f"Error processing record: {e}"))
+
+    if provider:
+        logger.info("Flushing OpenTelemetry provider.")
+        provider.force_flush()
+
     return {
         'statusCode': 200,
         'body': json.dumps('Successfully processed records.')

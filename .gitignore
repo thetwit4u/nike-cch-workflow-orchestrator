@@ -40,6 +40,7 @@ cdk.local.json
 PLANNING.md
 TASKS.md
 /schemas/
+cdk.context.json
 
 # CDK outputs
 workflow-orchestrator/cdk/cdk-outputs.json
