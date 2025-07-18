@@ -212,7 +212,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
             LOG_LEVEL: 'INFO',
             ...capabilityEnvVars,
             VERSION: new Date().toISOString(),
-            OTEL_EXPORTER_OTLP_ENDPOINT: `https://otel-collector-${cdk.Aws.REGION}.${process.env.HOSTED_ZONE_NAME || ''}:4318`,
+            OTEL_EXPORTER_OTLP_ENDPOINT: `https://trade-${process.env.ENVIRONMENT || 'st'}-otel-${cdk.Aws.REGION}.${process.env.HOSTED_ZONE_NAME || ''}:4318`,
             OTEL_SERVICE_NAME: process.env.SERVICE_NAME || '',
             OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
             OTEL_LOGS_EXPORTER: 'otlp',
