@@ -80,9 +80,18 @@ export class CchWorkflowOrchestratorStack extends Stack {
         });
 
         // --- SQS Queues ---
+        const deadLetterQueue = new sqs.Queue(this, 'OrchestratorCommandDLQ', {
+            queueName: `${mainPrefix}-command-dlq-${env}${ownerSuffix}`,
+            retentionPeriod: Duration.days(14),
+        });
+
         const commandQueue = new sqs.Queue(this, 'OrchestratorCommandQueue', {
             queueName: `${mainPrefix}-command-queue-${env}${ownerSuffix}`,
             visibilityTimeout: Duration.seconds(300),
+            deadLetterQueue: {
+                maxReceiveCount: 3,
+                queue: deadLetterQueue,
+            },
         });
 
         const replyQueue = new sqs.Queue(this, 'OrchestratorReplyQueue', {
@@ -198,7 +207,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
         }
 
         // --- Orchestrator Lambda Function (Conditional Build) ---
-        const commonLambdaEnv = {
+        let commonLambdaEnv: { [key: string]: string } = {
             STATE_TABLE_NAME: stateTable.tableName,
             DEFINITIONS_BUCKET_NAME: definitionsBucket.bucketName,
             COMMAND_QUEUE_URL: commandQueue.queueUrl,
@@ -208,6 +217,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
             EXPORT_QUEUE_URL: exportRequestQueue.queueUrl,
             SCHEDULER_ROLE_ARN: schedulerRole.roleArn,
             SCHEDULER_GROUP_NAME: schedulerGroupName,
+            DISABLE_OPENTELEMETRY: process.env.DISABLE_OPENTELEMETRY || 'false',
             LOG_LEVEL: 'INFO',
             ...capabilityEnvVars,
             VERSION: new Date().toISOString(),
@@ -241,16 +251,18 @@ export class CchWorkflowOrchestratorStack extends Stack {
                 entry: path.join(__dirname, '../../src'),
                 runtime: lambda.Runtime.PYTHON_3_13,
                 role: role,
-                vpc,
-                vpcSubnets: { subnets },
-                securityGroups,
                 logGroup: logGroup,
                 index: 'app.py',
                 handler: 'handler',
                 memorySize: 1024,
                 environment: commonLambdaEnv,
                 timeout: Duration.seconds(300),
-                bundling: { assetExcludes: ['.DS_Store', '.venv', 'tests'] },
+                bundling: {
+                    command: [
+                        'bash', '-c',
+                        'rsync -av --exclude="*.pyc" --exclude="__pycache__" . /asset-output/ && pip install -r /asset-output/requirements.txt -t /asset-output'
+                    ]
+                },
             });
         }
 
@@ -264,6 +276,17 @@ export class CchWorkflowOrchestratorStack extends Stack {
         exportRequestQueue.grantSendMessages(orchestratorLambda);
         if (mockCapabilityQueue) {
             mockCapabilityQueue.grantSendMessages(orchestratorLambda);
+        }
+
+        const debugCapabilityQueue = new sqs.Queue(this, 'DebugCapabilityQueue', {
+            queueName: `${mainPrefix}-debug-capability-queue-${env}${ownerSuffix}`,
+            visibilityTimeout: Duration.seconds(300),
+        });
+        debugCapabilityQueue.grantSendMessages(orchestratorLambda);
+
+        // Add the debug queue URL to the environment, but only if it's a test environment
+        if (isTestEnv) {
+            commonLambdaEnv['DEBUG_CAPABILITY_QUEUE_URL'] = debugCapabilityQueue.queueUrl;
         }
         orchestratorLambda.addToRolePolicy(new iam.PolicyStatement({
             actions: ['iam:PassRole'],
@@ -301,5 +324,6 @@ export class CchWorkflowOrchestratorStack extends Stack {
         new cdk.CfnOutput(this, 'WorkflowStateTableName', { value: stateTable.tableName });
         new cdk.CfnOutput(this, 'DefinitionsBucketName', { value: definitionsBucket.bucketName });
         new cdk.CfnOutput(this, 'IngestBucketName', { value: eventdataBucket.bucketName });
+        new cdk.CfnOutput(this, 'DebugCapabilityQueueUrl', { value: debugCapabilityQueue.queueUrl });
     }
 }

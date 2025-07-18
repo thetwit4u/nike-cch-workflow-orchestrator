@@ -99,15 +99,22 @@ def handle_async_request(state: WorkflowState, node_config: dict, node_name: str
             "command": inner_command
         }
 
-        # Determine the endpoint (SQS queue URL) for the capability service
-        service_name = capability_id.split('#')[0].upper()
-        endpoint_key_1 = f"CCH_MOCK_HTTP_ENDPOINT_{service_name}"
-        endpoint_key_2 = f"CCH_CAPABILITY_{service_name}"
-        queue_url = os.environ.get(endpoint_key_1) or os.environ.get(endpoint_key_2)
+        # Determine the endpoint, prioritizing the debug queue if available
+        debug_queue_url = os.environ.get('DEBUG_CAPABILITY_QUEUE_URL')
 
-        if not queue_url:
-            raise ValueError(f"Endpoint for capability service '{service_name}' is not configured. "
-                             f"Checked for '{endpoint_key_1}' and '{endpoint_key_2}'.")
+        if debug_queue_url:
+            queue_url = debug_queue_url
+            logger.info(f"DEBUG MODE: Routing capability request to debug queue: {queue_url}")
+        else:
+            service_name = capability_id.split('#')[0].upper()
+            endpoint_key_1 = f"CCH_MOCK_HTTP_ENDPOINT_{service_name}"
+            endpoint_key_2 = f"CCH_CAPABILITY_{service_name}"
+            
+            queue_url = os.environ.get(endpoint_key_1) or os.environ.get(endpoint_key_2)
+
+            if not queue_url:
+                raise ValueError(f"No capability endpoint configured for service '{service_name}'. "
+                                 f"Set either {endpoint_key_1} or {endpoint_key_2}.")
         
         queue_client = QueueClient()
         queue_client.send_message(queue_url, full_command_message)

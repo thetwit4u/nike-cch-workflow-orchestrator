@@ -1,0 +1,7 @@
+start_at: Create_Filing_Packs
+
+states:
+  Create_Filing_Packs:
+    type: capability
+    capability: cch:document-generation:create-filing-packs
+    end: true

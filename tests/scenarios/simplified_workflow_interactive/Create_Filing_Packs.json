@@ -1,0 +1,7 @@
+{
+    "command": "capability_response",
+    "status": "success",
+    "data": {
+        "filing_packs_uri": "s3://cch-filing-packs/packs-for-CON-12345.zip"
+    }
+}

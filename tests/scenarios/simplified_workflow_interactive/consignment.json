@@ -1,0 +1,13 @@
+{
+    "consignments": [
+        {
+            "consignmentId": "CON-12345",
+            "products": [
+                {
+                    "productId": "PROD-001",
+                    "description": "Nike Air Max 90"
+                }
+            ]
+        }
+    ]
+}
