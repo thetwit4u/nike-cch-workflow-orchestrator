@@ -1,11 +1,19 @@
-from typing import TypedDict, Dict, Any, List, Optional, Annotated
+from typing import TypedDict, Dict, Any, Optional, Annotated
 import operator
 
-def _merge_branch_checkpoints(left: dict | None, right: dict | None) -> dict:
-    """
-    Merges two dictionaries, giving precedence to the right-hand side.
-    Handles cases where one or both dictionaries might be None.
-    """
+def _overwrite_dict(left: dict, right: dict) -> dict:
+    """A reducer that merges two dictionaries, with the right side overwriting left."""
+    # This is not a deep merge. It's a shallow update.
+    # We create a new dictionary to avoid mutating the original state objects.
+    merged = (left or {}).copy()
+    if right:
+        merged.update(right)
+    return merged
+
+def _merge_branch_checkpoints(left: dict, right: dict) -> dict:
+    """This reducer is specifically for merging branch checkpoints. It should not be used for general state."""
+    # Note: This is a placeholder. A real implementation might need more
+    # sophisticated logic to handle complex merge scenarios between parallel branches.
     return {**(left or {}), **(right or {})}
 
 class WorkflowState(TypedDict):
@@ -18,13 +26,13 @@ class WorkflowState(TypedDict):
                  and control flags for the workflow.
     """
     workflow_definition_uri: str
-    context: Annotated[Dict, _merge_branch_checkpoints]
+    context: Annotated[Dict[str, Any], _overwrite_dict]
     command: dict[str, Any]
-    data: Annotated[dict, _merge_branch_checkpoints]
+    data: Annotated[Dict[str, Any], _overwrite_dict]
     # This key is used to collect results from parallel map_fork branches
     map_results: Annotated[list, operator.add]
     # This key stores the mapping of business branch_key to internal thread_id
-    branch_checkpoints: Annotated[dict, _merge_branch_checkpoints]
+    branch_checkpoints: Annotated[Dict[str, Any], _merge_branch_checkpoints]
     current_operation: dict[str, Any]
     is_error: Annotated[bool, operator.or_]
-    error_details: Annotated[Optional[dict[str, Any]], _merge_branch_checkpoints] 
+    error_details: Annotated[Optional[dict[str, Any]], _overwrite_dict] 

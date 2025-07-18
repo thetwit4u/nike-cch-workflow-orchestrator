@@ -88,16 +88,8 @@ def handle_async_request(state: WorkflowState, node_config: dict, node_name: str
         
         # The parser needs the full state to access both 'data' and 'context'
         parser = CommandParser(state, node_config)
-        inner_command = parser.create_command_message(command_type="ASYNC_REQ")
-
-        # Construct the full message envelope, including the workflow context
-        workflow_context = state.get("context", {})
-        full_command_message = {
-            "workflowInstanceId": workflow_context.get("workflowInstanceId"),
-            "correlationId": workflow_context.get("correlationId"),
-            "workflowDefinitionURI": workflow_context.get("workflow_definition_uri"),
-            "command": inner_command
-        }
+        # The create_command_message function already creates the full message envelope
+        full_command_message = parser.create_command_message(command_type="ASYNC_REQ")
 
         # Determine the endpoint, prioritizing the debug queue if available
         debug_queue_url = os.environ.get('DEBUG_CAPABILITY_QUEUE_URL')

@@ -1,0 +1,36 @@
+{
+  "workflowInstanceId": "f0e9d8c7-b6a5-4321-fedc-ba9876543210",
+  "correlationId": "CMAU7116574-CMDUDJA1345731",
+  "workflowDefinitionURI": "s3://cch-flow-controller-definitions-st-us-east-1/import_us_v1.yaml",
+  "command": {
+    "type": "ASYNC_RESP",
+    "id": "1d3b87b0-8c9a-4e1f-9dae-3f7c4a1b2c3d",
+    "source": "Capability:import#create_filingpacks",
+    "timestamp": "2025-07-09T11:52:00Z",
+    "payload": {
+      "status": "ERROR",
+      "errorPayload": {
+        "workflowInstanceId": "f0e9d8c7-b6a5-4321-fedc-ba9876543210",
+        "workflowStep": "Create_Filing_Packs",
+        "errorTimestamp": "2025-07-09T11:51:00Z",
+        "errors": [
+          {
+            "errorId": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+            "errorCorrelationId": "CMAU7116574-CMDUDJA1345731",
+            "errorCode": "MISSING_HTS_CODE",
+            "issueSummary": "An HTS code is missing for product 'Nike Air Max 90'.",
+            "developerMessage": "The field 'items[2].customsInfo.htsCode' is required for US imports but was null or empty.",
+            "metadata": {
+              "fieldPointer": "/items/2/customsInfo/htsCode",
+              "entityIds": {
+                "consignmentId": "CON-12345",
+                "productSku": "CU9978-102",
+                "consignmentImpExtId": "CMAU7116574-CMDUDJA1345731"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

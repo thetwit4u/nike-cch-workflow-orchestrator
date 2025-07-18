@@ -19,6 +19,7 @@ logger.info(f"--- Mock Service starting up, Version: {APP_VERSION} ---")
 # --- AWS Clients ---
 sqs_client = boto3.client('sqs')
 dynamodb = boto3.resource('dynamodb')
+s3_client = boto3.client('s3') # Add S3 client
 
 # --- Environment Variables ---
 MOCK_CONFIG_TABLE_NAME = os.environ.get('MOCK_CONFIG_TABLE_NAME')
@@ -92,69 +93,69 @@ def reset_mocks():
         return jsonify({"error": "UnexpectedError", "message": str(e)}), 500
 
 # --- SQS Event Processing Logic ---
-def handle_sqs_event(event, context):
+def handle_sqs_event(event, context_aws):
     """
     Processes SQS messages from the orchestrator.
     """
-    if not ORCHESTRATOR_COMMAND_QUEUE_URL or not mock_config_table:
-        logger.error("Required environment variables for SQS handling are not set.")
+    if not ORCHESTRATOR_COMMAND_QUEUE_URL:
+        logger.error("ORCHESTRATOR_COMMAND_QUEUE_URL environment variable is not set.")
         return
 
     for record in event['Records']:
         try:
             message_body = json.loads(record['body'])
-            logger.info(f"Received message body: {json.dumps(message_body, indent=2)}") # Added for debugging
+            logger.info(f"Received message body: {json.dumps(message_body, indent=2)}")
 
-            # Correctly parse the nested command structure from the orchestrator
-            command = message_body.get('command', {})
-            # The orchestrator sends the main data in 'body', not 'payload'
-            command_body = command.get('body', {}) 
-            capability_id = command_body.get('capability_id')
-            context = command_body.get('context', {})
+            capability_id = message_body.get('command', {}).get('capability_id')
+            context = message_body.get('command', {}).get('context', {})
 
             if not capability_id:
-                logger.error("Missing 'capability_id' in command body.")
+                logger.error("Missing 'capability_id' in command.")
                 continue
 
             logger.info(f"Processing SQS request for capability '{capability_id}'")
 
-            # Get mock configuration from DynamoDB
-            response_config = mock_config_table.get_item(Key={'capability_id': capability_id}).get('Item')
-            
             response_payload = {}
-            if response_config:
-                # Use the configured response if it exists
-                response_payload = response_config.get("response_data", {})
-                logger.info(f"Found configured mock for '{capability_id}'.")
+            response_status = "SUCCESS"
+
+            # On retry, the 'resumed_from_hitl' flag is present. Always succeed.
+            if context.get("resumed_from_hitl"):
+                logger.info("'resumed_from_hitl' is True. This is a retry. Returning SUCCESS.")
+                response_status = "SUCCESS"
+                response_payload = {
+                    "consignmentImportEnrichedId": context.get("consignmentId", str(uuid.uuid4())),
+                    "consignmentImportEnrichedURI": context.get("consignmentURI", "").replace(".json", "-enriched.json"),
+                    "importFilingPacks": [
+                        {"filingPackId": str(uuid.uuid4()), "status": "PENDING"},
+                        {"filingPackId": str(uuid.uuid4()), "status": "PENDING"}
+                    ]
+                }
+
+            # On initial run, the test script sends 'test_hitl_error' to force the error path.
+            elif context.get("test_hitl_error"):
+                logger.info("'test_hitl_error' is True. Returning HITL error response.")
+                response_status = "ERROR"
+                response_payload = {
+                    "messages": [{
+                        "messageId": str(uuid.uuid4()), "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "level": "ERROR", "code": "HITL_REQUIRED",
+                        "summary": "A recoverable error was triggered for testing.",
+                        "context": {"capabilityId": capability_id}
+                    }]
+                }
+            # Default case is success (for happy path tests).
             else:
-                # --- ADDED: Default logic for unconfigured capabilities ---
-                logger.info(f"No mock configured for '{capability_id}'. Using default logic.")
-                if capability_id == "import#enrich_deliveryset":
-                    response_payload = {
-                        "deliverySetImportEnrichedId": context.get("deliverySetId", str(uuid.uuid4())),
-                        "deliverySetImportEnrichedURI": context.get("deliverySetURI", "").replace(".json", "-enriched.json"),
-                        "deliverySetImportEnrichedStatus": "ENRICHED",
-                        "deliverySetImportEnrichedError": None
-                    }
-                elif capability_id == "import#create_filingpacks":
-                    # This is the merged capability for the simplified workflow.
-                    # It needs to return both enrichment and filing pack data.
-                    response_payload = {
-                        "deliverySetImportEnrichedId": context.get("deliverySetId", str(uuid.uuid4())),
-                        "deliverySetImportEnrichedURI": context.get("deliverySetURI", "").replace(".json", "-enriched.json"),
-                        "deliverySetImportEnrichedStatus": "SUCCESS",
-                        "importFilingPacksStatus": "SUCCESS",
-                        "importFilingPacksError": None,
-                        "importFilingPacks": [
-                            {"filingPackId": str(uuid.uuid4()), "status": "PENDING"},
-                            {"filingPackId": str(uuid.uuid4()), "status": "PENDING"}
-                        ]
-                    }
-                else:
-                    response_payload = {"error": "No mock configured for this capability"}
+                logger.info("No error flags detected. Returning SUCCESS for happy path.")
+                response_status = "SUCCESS"
+                response_payload = {
+                    "consignmentImportEnrichedId": context.get("consignmentId", str(uuid.uuid4())),
+                    "consignmentImportEnrichedURI": context.get("consignmentURI", "").replace(".json", "-enriched.json"),
+                    "importFilingPacks": [
+                        {"filingPackId": str(uuid.uuid4()), "status": "PENDING"},
+                        {"filingPackId": str(uuid.uuid4()), "status": "PENDING"}
+                    ]
+                }
 
-
-            # Construct the response message to send back to the orchestrator
             response_command = {
                 "workflowInstanceId": message_body.get("workflowInstanceId"),
                 "correlationId": message_body.get("correlationId"),
@@ -164,7 +165,8 @@ def handle_sqs_event(event, context):
                     "id": f"resp-cmd-mock-{uuid.uuid4()}",
                     "source": f"Capability:{capability_id}",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "payload": response_payload,
+                    "status": response_status,
+                    "payload": response_payload
                 }
             }
 
