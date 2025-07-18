@@ -4,6 +4,7 @@ from typing import Dict, Any
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Send
+from langgraph.errors import GraphInterrupt
 
 from orchestrator.state import WorkflowState
 from orchestrator.nodes import core_nodes, capability_nodes, library_nodes
@@ -56,43 +57,39 @@ class GraphBuilder:
     def _add_edges(self):
         """Adds edges to the graph based on the workflow definition."""
         for node_name, node_config in self.definition["nodes"].items():
-            node_type = node_config.get("type")
-
-            if node_type == "condition":
-                branches = node_config.get("branches", {})
-                for next_node in branches.values():
-                    if next_node:  # Ensure there's a next node defined
-                        self.workflow.add_edge(node_name, next_node)
-            elif node_type == "map_fork":
-                # The join node will have an edge pointing *from* the map_fork
-                pass
-            elif node_type == "join":
-                # The join node is a convergence point, edges point *to* it
-                if "on_success" in node_config:
-                    self.workflow.add_edge(node_name, node_config["on_success"])
-                if "on_failure" in node_config:
-                    self.workflow.add_edge(node_name, node_config["on_failure"])
-            else:  # For linear nodes like library_call, async_request, etc.
-                # Handle both on_success and the on_response alias for async nodes
-                success_path = node_config.get("on_success") or node_config.get("on_response")
+            # The 'on_failure' edge is now handled globally for all node types that support it.
+            # This simplifies the logic and ensures consistent error handling.
+            if "on_failure" in node_config:
+                self.workflow.add_conditional_edges(
+                    node_name,
+                    lambda state: "on_failure" if state.get("is_error") else "on_success",
+                    {
+                        "on_failure": node_config["on_failure"],
+                        "on_success": self._get_success_path(node_config) or END
+                    }
+                )
+            # For nodes without a dedicated failure path, we use standard edges.
+            else:
+                node_type = node_config.get("type")
+                if node_type == "condition":
+                        # Conditional nodes resolve their own branches; no standard edge needed here.
+                        self._add_conditional_edge(node_name, node_config)
+                elif node_type == "map_fork":
+                        # Map_fork has its own resolver for parallel execution.
+                        self._add_map_fork_edge(node_name, node_config)
+                elif node_type == "event_wait":
+                    self._add_event_wait_edge(node_name, node_config)
+                else:
+                    # For all other nodes, add a direct edge to their success path.
+                    success_path = self._get_success_path(node_config)
+                    if success_path:
+                        self.workflow.add_edge(node_name, success_path)
                 
-                if success_path:
-                    self.workflow.add_edge(node_name, success_path)
-                
-                if "on_failure" in node_config:
-                    # Add a conditional edge for failure based on the 'is_error' flag
-                    # The source of the conditional edge is the node itself
-                    self.workflow.add_conditional_edges(
-                        node_name,
-                        # The decider function checks the 'is_error' flag in the state
-                        lambda state: state.get("is_error", False),
-                        {
-                            # If is_error is True, go to the on_failure node
-                            True: node_config["on_failure"],
-                            # If is_error is False, go to success_path or end the graph
-                            False: success_path or END
-                        }
-                    )
+    def _get_success_path(self, node_config: dict) -> str | None:
+        """Helper to get the primary success transition for a node."""
+        return node_config.get("on_success") or \
+               node_config.get("on_response") or \
+               node_config.get("on_event")
 
     def _add_conditional_edge(self, node_name: str, node_data: Dict[str, Any]):
         """Adds a standard conditional edge for branching."""
@@ -185,32 +182,14 @@ class GraphBuilder:
 
     def _add_event_wait_edge(self, node_name: str, node_data: Dict[str, Any]):
         """
-        Adds a conditional edge for an event_wait node. It pauses execution
-        by routing to END if the event_key is not in the state.
+        This is now handled by the node's action returning an Interrupt.
+        The resume logic will be handled by the service layer.
+        This function can be removed or simplified as it's no longer creating edges.
         """
-        event_key = node_data.get('event_key')
-        if not event_key:
-            raise ValueError(f"event_wait node '{node_name}' must have an 'event_key' property.")
-        
-        on_event_node = node_data.get('on_event')
-        if not on_event_node:
-            raise ValueError(f"event_wait node '{node_name}' must have an 'on_event' property.")
+        # This function is now effectively a no-op as the edge logic is implicit.
+        # The 'on_success' edge is added via the default edge handler.
+        pass
 
-        def event_resolver(state: WorkflowState):
-            if event_key in state['data']:
-                logger.info(f"Event key '{event_key}' found. Resuming from '{node_name}' to '{on_event_node}'.")
-                return on_event_node
-            else:
-                logger.info(f"Event key '{event_key}' not found. Pausing execution at '{node_name}'.")
-                return END
-        
-        # This is a special conditional edge that only has one real path.
-        # The path map directs the resolved node name to itself.
-        self.workflow.add_conditional_edges(
-            node_name,
-            event_resolver,
-            {on_event_node: on_event_node}
-        )
 
     def _create_branch_resolver(self, node_name: str, condition_key: str, branches: Dict[str, str], has_failure_path: bool):
         """
@@ -221,16 +200,20 @@ class GraphBuilder:
                 logger.warning(f"Error detected in state. Routing node '{node_name}' to on_failure.")
                 return "__failure__"
             
-            # Allow nested key access, e.g., "context.some_key"
+            # All condition keys are resolved against the 'data' field of the state.
+            data_context = state.get("data", {})
+            
+            # Allow nested key access within the data context, e.g., "importFilingPacksError.error_type"
             keys = condition_key.split('.')
-            value = state
+            value = data_context
             try:
                 for key in keys:
                     value = value[key]
             except (KeyError, TypeError):
+                logger.warning(f"Condition key '{condition_key}' not found in state's data context. Defaulting to None.")
                 value = None # Key not found, treat as None
 
-            logger.info(f"Condition node '{node_name}' resolving based on key '{condition_key}' with value '{value}'")
+            logger.info(f"Condition node '{node_name}' resolving based on key 'data.{condition_key}' with value '{value}'")
             
             # Note: The branch keys in the YAML must be strings. 'True' becomes "True".
             branch_target = branches.get(str(value), branches.get("_default"))
@@ -247,53 +230,86 @@ class GraphBuilder:
 
     def _create_node_action(self, node_name: str, node_data: Dict[str, Any]):
         """
-        A factory function that returns the appropriate callable action for a node.
+        Factory function to create the appropriate node action based on its type.
+        This now returns a wrapper that handles global concerns like error handling
+        and updating the current_node context.
         """
-        node_type = node_data.get('type')
-        library_call = node_data.get('library_function_id')
-        capability_call = node_data.get('capability_id')
+        
+        # This inner function gets the specific business logic for the node type.
+        base_action = self._get_base_action(node_data.get("type"), node_name, node_data)
 
-        # --- Core Node Types ---
-        if node_type == 'end':
-            return partial(core_nodes.set_state_node_wrapper,
-                           node_config={'static_outputs': {'status': 'COMPLETED'}},
-                           node_name=node_name)
+        def action_wrapper(state: WorkflowState):
+            # Always update the current node in the context first.
+            state["context"]["current_node"] = node_name
+            
+            # The global error handler is now implemented as a try/except block here.
+            # This ensures that any node can be routed to its 'on_failure' path.
+            try:
+                # Execute the specific action for the node
+                result = base_action(state)
 
-        if node_type in ['entry', 'fork', 'join', 'condition', 'map_fork', 'event_wait', 'end_branch']:
-             return lambda state: state # These are routing/structural nodes
+                # If the action returns an Interrupt, it must be re-raised to be
+                # caught by LangGraph's machinery. Do not wrap it.
+                if isinstance(result, GraphInterrupt):
+                    return result
 
-        if node_type == 'log_error':
-            return partial(core_nodes.handle_log_error, node_config=node_data, node_name=node_name)
+                # On successful execution, clear any previous error state.
+                # This is important for retry scenarios.
+                if state.get("is_error"):
+                    if isinstance(result, dict):
+                        result.setdefault("is_error", False)
+                        result.setdefault("error_details", None)
+                    else: # If the result is not a dict, we can't patch it. This shouldn't happen with our actions.
+                        logger.warning(f"Node '{node_name}' returned non-dict result; cannot clear error state.")
 
-        if node_type == 'set_state':
+                return result
+
+            except GraphInterrupt:
+                # This is a special exception used by LangGraph to pause execution.
+                # It should be re-raised immediately without being caught as a general error.
+                raise
+            except Exception as e:
+                error_message = f"Unhandled exception in node '{node_name}': {e}"
+                logger.error(error_message, exc_info=True)
+                # This is a critical failure. We update the state to reflect the error
+                # and allow the conditional edge logic to route to 'on_failure'.
+                return {
+                    "is_error": True,
+                    "error_details": {"node": node_name, "error": error_message}
+                }
+        
+        return action_wrapper
+
+
+    def _get_base_action(self, node_type: str, node_name: str, node_data: dict):
+        """
+        Returns the specific handler function for a given node type.
+        """
+        if node_type == "start":
+            return partial(core_nodes.handle_start_node, node_config=node_data, node_name=node_name)
+        elif node_type == "end" or node_type == "set_state":
+            # 'end' is just a 'set_state' with a conventional name
             return partial(core_nodes.set_state_node_wrapper, node_config=node_data, node_name=node_name)
-
-        # --- Library Call Node ---
-        if library_call:
-            if library_call not in library_handler_map:
-                raise ValueError(f"Unknown library function ID: {library_call}")
-            handler = library_handler_map[library_call]
-            return partial(handler, node_config=node_data, node_name=node_name)
-        
-        # --- Capability Node Types ---
-        if node_type == 'async_request':
-            if not capability_call:
-                raise ValueError(f"Node '{node_name}' of type 'async_request' must have a 'capability_id'.")
+        elif node_type == "log_error":
+            return partial(core_nodes.handle_log_error, node_config=node_data, node_name=node_name)
+        elif node_type == 'event_wait':
+             return partial(core_nodes.handle_event_wait, node_config=node_data, node_name=node_name)
+        elif node_type == "async_request":
             return partial(capability_nodes.handle_async_request, node_config=node_data, node_name=node_name)
-
-        if node_type == 'scheduled_request':
-            if not capability_call:
-                raise ValueError(f"Node '{node_name}' of type 'scheduled_request' must have a 'capability_id'.")
-            return partial(capability_nodes.handle_scheduled_request, node_config=node_data, node_name=node_name)
-        
-        if node_type == 'sync_call':
-            if not capability_call:
-                raise ValueError(f"Node '{node_name}' of type 'sync_call' must have a 'capability_id'.")
+        elif node_type == "sync_call":
             return partial(capability_nodes.handle_sync_call, node_config=node_data, node_name=node_name)
-
-        # --- Fallback for unhandled node types ---
-        logger.warning(f"No specific action found for node '{node_name}' of type '{node_type}'. It will be treated as a pass-through node.")
-        
-        def unhandled_node_action(state):
-            return state
-        return unhandled_node_action 
+        elif node_type == "scheduled_request":
+            return partial(capability_nodes.handle_scheduled_request, node_config=node_data, node_name=node_name)
+        elif node_type == "library_function":
+            handler = library_handler_map.get(node_data.get('function_id'))
+            if not handler:
+                raise ValueError(f"No handler found for library function_id: {node_data.get('function_id')}")
+            # Wrap the specific library handler in the generic wrapper
+            return partial(library_nodes.library_node_wrapper, handler=handler, node_config=node_data, node_name=node_name)
+        elif node_type == 'condition' or node_type == 'fork' or node_type == 'join' or node_type == 'map_fork':
+            # These nodes only have routing logic defined in edges, so their action is a no-op.
+            return core_nodes.pass_through_action
+        else:
+            def unhandled_node_action(state):
+                raise NotImplementedError(f"Node type '{node_type}' is not yet implemented.")
+            return unhandled_node_action 

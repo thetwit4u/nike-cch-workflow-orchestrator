@@ -50,6 +50,8 @@ export class CchWorkflowOrchestratorStack extends Stack {
         const ownerSuffix = owner ? `-${owner}` : '';
         const mainPrefix = 'cch-flow-orchestrator';
         const definitionsBucketPrefix = 'cch-flow-definitions';
+        const platformType = 'core';
+        const dataClassification = 'ru';
 
         // Resolve VPC from vpcId
         const vpc = Vpc.fromLookup(this, 'Vpc', { vpcId: (process.env.VPC_ID || '') });
@@ -65,7 +67,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
         );
 
         const logGroup = new logs.LogGroup(this, 'LogGroup', {
-            logGroupName: `/aws/lambda/${process.env.SERVICE_NAME || ''}`,
+            logGroupName: `/opentelemetry/${platformType}-${dataClassification}/aws/lambda/${process.env.SERVICE_NAME || ''}`,
             removalPolicy: cdk.RemovalPolicy.DESTROY,
             retention: logs.RetentionDays.ONE_WEEK
         });
@@ -208,10 +210,11 @@ export class CchWorkflowOrchestratorStack extends Stack {
             EXPORT_QUEUE_URL: exportRequestQueue.queueUrl,
             SCHEDULER_ROLE_ARN: schedulerRole.roleArn,
             SCHEDULER_GROUP_NAME: schedulerGroupName,
+            DISABLE_OPENTELEMETRY: process.env.DISABLE_OPENTELEMETRY || 'false',
             LOG_LEVEL: 'INFO',
             ...capabilityEnvVars,
             VERSION: new Date().toISOString(),
-            OTEL_EXPORTER_OTLP_ENDPOINT: `https://otel-collector-${cdk.Aws.REGION}.${process.env.HOSTED_ZONE_NAME || ''}:4318`,
+            OTEL_EXPORTER_OTLP_ENDPOINT: `https://trade-${process.env.ENVIRONMENT || 'st'}-otel-${cdk.Aws.REGION}.${process.env.HOSTED_ZONE_NAME || ''}:4318`,
             OTEL_SERVICE_NAME: process.env.SERVICE_NAME || '',
             OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
             OTEL_LOGS_EXPORTER: 'otlp',
@@ -241,16 +244,18 @@ export class CchWorkflowOrchestratorStack extends Stack {
                 entry: path.join(__dirname, '../../src'),
                 runtime: lambda.Runtime.PYTHON_3_13,
                 role: role,
-                vpc,
-                vpcSubnets: { subnets },
-                securityGroups,
                 logGroup: logGroup,
                 index: 'app.py',
                 handler: 'handler',
                 memorySize: 1024,
                 environment: commonLambdaEnv,
                 timeout: Duration.seconds(300),
-                bundling: { assetExcludes: ['.DS_Store', '.venv', 'tests'] },
+                bundling: {
+                    command: [
+                        'bash', '-c',
+                        'rsync -av --exclude="*.pyc" --exclude="__pycache__" . /asset-output/ && pip install -r /asset-output/requirements.txt -t /asset-output'
+                    ]
+                },
             });
         }
 
