@@ -50,6 +50,8 @@ export class CchWorkflowOrchestratorStack extends Stack {
         const ownerSuffix = owner ? `-${owner}` : '';
         const mainPrefix = 'cch-flow-orchestrator';
         const definitionsBucketPrefix = 'cch-flow-definitions';
+        const platformType = 'core';
+        const dataClassification = 'ru';
 
         // Resolve VPC from vpcId
         const vpc = Vpc.fromLookup(this, 'Vpc', { vpcId: (process.env.VPC_ID || '') });
@@ -65,7 +67,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
         );
 
         const logGroup = new logs.LogGroup(this, 'LogGroup', {
-            logGroupName: `/aws/lambda/${process.env.SERVICE_NAME || ''}`,
+            logGroupName: `/opentelemetry/${platformType}-${dataClassification}/aws/lambda/${process.env.SERVICE_NAME || ''}`,
             removalPolicy: cdk.RemovalPolicy.DESTROY,
             retention: logs.RetentionDays.ONE_WEEK
         });
