@@ -1,7 +1,7 @@
 {
     "command": "capability_response",
+    "status": "SUCCESS",
     "data": {
-        "status": "SUCCESS",
         "consignmentImportEnrichedId": "84ab4a4f-7d85-415a-a0fd-dffc41204bcd",
         "consignmentImportEnrichedURI": "s3://import-test/CMAU7116574-CMDUDJA1345731/consignment-enriched.json",
         "importFilingPacks": [

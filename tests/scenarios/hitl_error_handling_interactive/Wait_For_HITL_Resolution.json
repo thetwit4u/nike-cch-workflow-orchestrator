@@ -1,12 +1,13 @@
 {
+    "workflowInstanceId": "PLACEHOLDER_WORKFLOW_INSTANCE_ID",
+    "correlationId": "PLACEHOLDER_CORRELATION_ID",
+    "workflowDefinitionURI": "PLACEHOLDER_WORKFLOW_DEFINITION_URI",
     "command": {
-        "type": "EVENT",
-        "event_type": "HITL_RESP",
+        "type": "HITL_RESP",
+        "id": "PLACEHOLDER_COMMAND_ID",
+        "source": "InteractiveTestScript",
+        "timestamp": "PLACEHOLDER_TIMESTAMP",
         "status": "SUCCESS",
-        "payload": {
-            "resolution_notes": "Manual intervention completed by interactive test script.",
-            "billOfLadingNbr": "HITL-PASS",
-            "resumed_from_hitl": true
-        }
+        "payload": {}
     }
 }

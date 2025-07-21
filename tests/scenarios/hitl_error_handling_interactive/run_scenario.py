@@ -14,6 +14,16 @@ sys.path.insert(0, str(project_root))
 
 from tests.utils.cdk_outputs_parser import CdkOutputsParser
 from tests.utils.aws_client import AWSClient
+from tests.utils.workflow_verifier import WorkflowVerifier
+
+# Try to import pygments for syntax highlighting
+try:
+    from pygments import highlight
+    from pygments.lexers import JsonLexer
+    from pygments.formatters import TerminalFormatter
+    PYGMENTS_AVAILABLE = True
+except ImportError:
+    PYGMENTS_AVAILABLE = False
 
 class InteractiveTestRunner:
     def __init__(self, scenario_path: Path):
@@ -38,6 +48,10 @@ class InteractiveTestRunner:
 
         # Initialize the robust AWS client that assumes the correct role
         self.aws_client = AWSClient(region_name=region, test_executor_role_arn=role_arn)
+        
+        # Initialize workflow verifier for checking final states
+        workflow_state_table = self.cdk_outputs['WorkflowStateTableName']
+        self.workflow_verifier = WorkflowVerifier(self.aws_client, workflow_state_table)
 
         print("\n--- Using the following AWS resources ---")
         print(f"  Command Queue URL: {self.command_queue_url}")
@@ -76,6 +90,13 @@ class InteractiveTestRunner:
                 capabilities.append(capability_name)
         return sorted(capabilities)
 
+    def _format_json(self, data: dict) -> str:
+        """Format JSON with syntax highlighting if pygments is available."""
+        json_str = json.dumps(data, indent=2)
+        if PYGMENTS_AVAILABLE:
+            return highlight(json_str, JsonLexer(), TerminalFormatter())
+        return json_str
+
     def _upload_file_to_s3(self, bucket: str, file_path: Path, key: str):
         """Uploads a local file to the specified S3 bucket."""
         print(f"Uploading {file_path.name} to s3://{bucket}/{key}...")
@@ -92,8 +113,10 @@ class InteractiveTestRunner:
             message_body=message_body
         )
 
-    def _receive_message(self, queue_url: str, wait_time_seconds: int = 20) -> dict | None:
-        """Receives a single message from the specified SQS queue."""
+    def _receive_message(self, queue_url: str, wait_time_seconds: int = 20) -> tuple[dict, str] | None:
+        """Receives a single message from the specified SQS queue.
+        Returns tuple of (message_body, receipt_handle) or None.
+        """
         print(f"Waiting for message on {queue_url.split('/')[-1]}...")
         messages = self.aws_client.get_sqs_messages(
             queue_url=queue_url,
@@ -102,14 +125,15 @@ class InteractiveTestRunner:
         )
         if messages:
             message = messages[0]
-            # The message is not explicitly deleted. The visibility timeout handles it.
             # AWSClient already parses the JSON, so message['Body'] is already a dict
-            return message['Body']
+            return message['Body'], message['ReceiptHandle']
         return None
 
     def run(self):
         """Executes the interactive test scenario."""
         print("--- Starting Interactive Workflow Scenario ---")
+        if not PYGMENTS_AVAILABLE:
+            print("💡 Tip: Install 'pygments' for colorized JSON output: pip install pygments")
         correlation_id = f"interactive-test-{uuid.uuid4()}"
 
         # 1. Upload workflow definition and consignment data
@@ -161,15 +185,26 @@ class InteractiveTestRunner:
 
             # Always use the fallback queue for testing since it receives all capability requests
             # when no specific capability queues are configured
-            capability_message = self._receive_message(self.fallback_capability_queue_url)
+            # Use shorter timeout (10s) for better interactive experience
+            result = self._receive_message(self.fallback_capability_queue_url, wait_time_seconds=10)
 
-            if capability_message:
+            if result:
+                capability_message, receipt_handle = result
+                # Store the receipt handle so we can delete the message after processing
+                self._current_receipt_handle = receipt_handle
                 # A capability is requesting an action
                 print("\n--- Received Capability Request ---")
-                print(json.dumps(capability_message, indent=2))
+                print(self._format_json(capability_message))
                 print("-----------------------------------")
 
-                node_name = capability_message.get('context', {}).get('current_node')
+                # Map capability_id to node name for finding response files
+                capability_id = capability_message.get('command', {}).get('capability_id', '')
+                # Map capability ID to node name (e.g., "import#create_filingpacks" -> "Create_Filing_Packs")
+                capability_to_node = {
+                    'import#create_filingpacks': 'Create_Filing_Packs',
+                    # Add more mappings as needed
+                }
+                node_name = capability_to_node.get(capability_id, capability_id.replace('#', '_').replace('_', '_').title())
                 last_paused_node = node_name # This is the node we expect a response for
 
                 # Increment call count for this node
@@ -188,12 +223,81 @@ class InteractiveTestRunner:
                 with open(response_file, 'r') as f:
                     response_payload = json.load(f)
 
-                response_payload['correlationId'] = capability_message.get('correlationId')
+                # Create a proper response message structure
+                response_message = {
+                    "workflowInstanceId": capability_message.get('workflowInstanceId'),
+                    "correlationId": capability_message.get('correlationId'),
+                    "workflowDefinitionURI": capability_message.get('workflowDefinitionURI'),
+                    "command": {
+                        "type": "ASYNC_RESP",
+                        "id": str(uuid.uuid4()),
+                        "source": "MockCapabilityService",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "in_reply_to": capability_message.get('command', {}).get('id'),
+                        "status": "SUCCESS" if response_payload.get('status') == 'SUCCESS' else 'ERROR',
+                        "payload": response_payload.get('data', {})
+                    }
+                }
 
                 print(f"\nFound response file: {response_file.name}")
+                print("Response payload:")
+                print(self._format_json(response_message))
                 input("--- Press Enter to send the response back to the orchestrator ---")
-                self._send_sqs_message(self.command_queue_url, response_payload)
+                self._send_sqs_message(self.command_queue_url, response_message)
                 print("Response sent.")
+                
+                # Delete the processed capability message from the queue
+                self._delete_processed_message()
+                
+                # If we sent an ERROR response, immediately handle HITL resolution
+                if response_payload.get('status') == 'ERROR':
+                    last_paused_node = 'Wait_For_HITL_Resolution'
+                    print(f"Sent ERROR response - workflow will pause at '{last_paused_node}'")
+                    
+                    # Give the workflow a moment to process the error and pause
+                    import time
+                    print("Waiting for workflow to pause...")
+                    time.sleep(2)
+                    
+                    # Now send the HITL resolution immediately
+                    resume_file = self.scenario_path / f"{last_paused_node}.json"
+                    if resume_file.exists():
+                        print(f"\nSending HITL resolution for '{last_paused_node}'")
+                        
+                        with open(resume_file, 'r') as f:
+                            resume_payload = json.load(f)
+                        
+                        # Populate placeholder values
+                        resume_payload['correlationId'] = correlation_id
+                        resume_payload['workflowInstanceId'] = correlation_id
+                        
+                        if 'workflowDefinitionURI' in resume_payload and resume_payload['workflowDefinitionURI'] == 'PLACEHOLDER_WORKFLOW_DEFINITION_URI':
+                            workflow_def_file = next(self.scenario_path.glob('*.yaml'))
+                            resume_payload['workflowDefinitionURI'] = f"s3://{self.definitions_bucket}/workflows/{workflow_def_file.name}"
+                        
+                        if 'command' in resume_payload:
+                            command = resume_payload['command']
+                            if command.get('id') == 'PLACEHOLDER_COMMAND_ID':
+                                command['id'] = str(uuid.uuid4())
+                            if command.get('timestamp') == 'PLACEHOLDER_TIMESTAMP':
+                                command['timestamp'] = datetime.now(timezone.utc).isoformat()
+
+                        print("HITL Resolution payload:")
+                        print(self._format_json(resume_payload))
+                        input("--- Press Enter to send the HITL resolution ---")
+                        self._send_sqs_message(self.command_queue_url, resume_payload)
+                        print("HITL resolution sent.")
+                        
+                        # Give the workflow time to process HITL resolution and retry the capability
+                        print("Waiting for workflow to process HITL resolution and retry capability...")
+                        time.sleep(5)  # Longer wait for retry capability request
+                        
+                        # Reset for next capability request (retry)
+                        last_paused_node = None
+                    else:
+                        print(f"ERROR: No HITL resolution file found: {resume_file}")
+                else:
+                    last_paused_node = None  # Reset for success responses
 
             else:
                 # No message received, likely paused at an event_wait node
@@ -214,17 +318,86 @@ class InteractiveTestRunner:
                 with open(resume_file, 'r') as f:
                     resume_payload = json.load(f)
                 
-                # Inject the correlationId into the resume command
+                # Populate all placeholder values in the resume command
                 resume_payload['correlationId'] = correlation_id
                 resume_payload['workflowInstanceId'] = correlation_id
+                
+                # Get workflow definition URI from the first capability message if available
+                if 'workflowDefinitionURI' in resume_payload and resume_payload['workflowDefinitionURI'] == 'PLACEHOLDER_WORKFLOW_DEFINITION_URI':
+                    # Try to get from previous capability message or construct it
+                    workflow_def_file = next(self.scenario_path.glob('*.yaml'))
+                    resume_payload['workflowDefinitionURI'] = f"s3://{self.definitions_bucket}/workflows/{workflow_def_file.name}"
+                
+                # Populate command-level placeholders
+                if 'command' in resume_payload:
+                    command = resume_payload['command']
+                    if command.get('id') == 'PLACEHOLDER_COMMAND_ID':
+                        command['id'] = str(uuid.uuid4())
+                    if command.get('timestamp') == 'PLACEHOLDER_TIMESTAMP':
+                        command['timestamp'] = datetime.now(timezone.utc).isoformat()
 
+                print("Resume command payload:")
+                print(self._format_json(resume_payload))
                 self._send_sqs_message(self.command_queue_url, resume_payload)
                 print("Resume command sent.")
                 last_paused_node = None # Reset, as we've sent the resume command
 
             step += 1
 
+        # 4. Verify final workflow state
+        print("\n--- Verifying Final Workflow State ---")
+        self._verify_workflow_completion(correlation_id)
+        
         print("\n--- Scenario Finished ---")
+
+    def _delete_processed_message(self):
+        """Delete the currently processed capability message from the queue."""
+        if hasattr(self, '_current_receipt_handle') and self._current_receipt_handle:
+            print("Deleting processed message from queue...")
+            self.aws_client.delete_sqs_message(
+                self.fallback_capability_queue_url, 
+                self._current_receipt_handle
+            )
+            self._current_receipt_handle = None
+            print("Message deleted successfully.")
+        else:
+            print("No message to delete (receipt handle not found).")
+
+    def _verify_workflow_completion(self, correlation_id: str):
+        """Verify that the workflow has completed successfully."""
+        try:
+            # Poll for final state with a reasonable timeout
+            final_state = self.workflow_verifier.poll_for_final_state(
+                correlation_id,
+                lambda state: (
+                    state.get("data", {}).get("status") == "COMPLETED" or
+                    state.get("context", {}).get("current_node") == "End_Workflow"
+                ),
+                timeout_seconds=60,
+                interval_seconds=5
+            )
+            
+            if final_state:
+                context = final_state.get("context", {})
+                data = final_state.get("data", {})
+                current_node = context.get("current_node")
+                status = data.get("status")
+                
+                print(f"✅ Workflow completed successfully!")
+                print(f"   Final Node: {current_node}")
+                print(f"   Status: {status}")
+                
+                # Show any messages that were processed during HITL
+                messages = data.get("messages", [])
+                if messages:
+                    print(f"   Messages processed: {len(messages)}")
+                    for msg in messages:
+                        print(f"     - {msg.get('level', 'INFO')}: {msg.get('summary', 'No summary')}")
+            else:
+                print("❌ Workflow did not complete within the expected timeframe.")
+                
+        except Exception as e:
+            print(f"❌ Error verifying workflow completion: {e}")
 
 if __name__ == "__main__":
     # The scenario is located in the same directory as the script

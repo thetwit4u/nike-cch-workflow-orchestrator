@@ -174,7 +174,7 @@ class InteractiveTestRunner:
                 "source": "MockCapabilityService",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "in_reply_to": original_request.get('command', {}).get('id'),
-                "status": "success" if response_payload.get('data', {}).get('status') == 'SUCCESS' else 'error',
+                "status": "SUCCESS" if response_payload.get('status') == 'SUCCESS' else 'ERROR',
                 "payload": response_payload.get('data', {})
             }
         }

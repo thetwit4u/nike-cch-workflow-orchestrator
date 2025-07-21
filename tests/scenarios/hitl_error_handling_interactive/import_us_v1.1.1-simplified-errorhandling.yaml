@@ -15,15 +15,10 @@ nodes:
     input_keys:
       - "consignmentId"
       - "consignmentURI"
-      - "status"
-      - "test_hitl_error"
-      - "resumed_from_hitl"
 
     request_output_keys:
       - "consignmentImportEnrichedId"
       - "consignmentImportEnrichedURI"
-      - "importFilingPacksStatus"
-      - "importFilingPacksError"
       - "importFilingPacks"
     on_response: Check_Response_Status
 
