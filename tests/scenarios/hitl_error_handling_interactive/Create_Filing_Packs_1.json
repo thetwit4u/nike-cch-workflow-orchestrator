@@ -1,0 +1,8 @@
+{
+    "command": "capability_response",
+    "status": "ERROR",
+    "data": {
+        "error_code": "CAP-001",
+        "error_message": "Forced HITL error triggered by billOfLadingNbr 'HITL-TRIGGER'."
+    }
+}

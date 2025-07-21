@@ -1,0 +1,12 @@
+{
+    "command": {
+        "type": "EVENT",
+        "event_type": "HITL_RESP",
+        "status": "SUCCESS",
+        "payload": {
+            "resolution_notes": "Manual intervention completed by interactive test script.",
+            "billOfLadingNbr": "HITL-PASS",
+            "resumed_from_hitl": true
+        }
+    }
+}

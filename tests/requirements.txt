@@ -7,3 +7,4 @@ jsonschema
 requests
 msgpack
 botocore 
+pygments

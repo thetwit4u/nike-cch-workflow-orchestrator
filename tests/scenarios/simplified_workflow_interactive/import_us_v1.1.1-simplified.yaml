@@ -1,7 +1,42 @@
-start_at: Create_Filing_Packs
+schema_version: "1.1.2"
+workflow_name: "Simplified Import US Workflow"
+workflow_id: "import_us_v1_simplified"
+entry_point: Create_Filing_Packs
 
-states:
+initial_context:
+  - consignmentId
+  - consignmentURI
+
+nodes:
   Create_Filing_Packs:
-    type: capability
-    capability: cch:document-generation:create-filing-packs
-    end: true
+    type: async_request
+    title: "Create Filing Packs with Enrichment"
+    capability_id: "import#create_filingpacks"
+    input_keys:
+      - "consignmentId"
+      - "consignmentURI"
+    request_output_keys:
+      - "consignmentImportEnrichedId"
+      - "consignmentImportEnrichedURI"
+      - "importFilingPacks"
+    on_response: Process_Filing_Packs_Response
+    on_failure: Handle_Error
+
+  Process_Filing_Packs_Response:
+    type: sync_call
+    title: "Process Filing Packs Response"
+    capability_id: "core-process-response"
+    on_success: End_Workflow
+    on_failure: Handle_Error
+
+  Handle_Error:
+    type: log_error
+    title: "Generic Error Handler"
+    default_error_code: "GEN-001"
+    message_from_context_key: "_internalError"
+    default_message: "A general error occurred in the workflow."
+    on_success: End_Workflow
+
+  End_Workflow:
+    type: end
+    title: "End Workflow"
