@@ -16,9 +16,5 @@
 CCH_CAPABILITY_REVERSE_IMAGE_SEARCH=https://sqs.eu-west-1.amazonaws.com/123456789012/cch-capability-ris-dev-david
 CCH_CAPABILITY_IMAGE_METADATA=https://sqs.eu-west-1.amazonaws.com/123456789012/cch-capability-im-dev-david
 
-# For dev environments, the mock queue is created automatically.
-# Only set this if you want to override the auto-created mock queue
-# CCH_CAPABILITY_MOCK_QUEUE=https://sqs.eu-west-1.amazonaws.com/123456789012/cch-capability-mock-queue-dev-david
-
 # Add more capability queue URLs as needed
 # CCH_CAPABILITY_<CAPABILITY_NAME>=<SQS_QUEUE_URL>
