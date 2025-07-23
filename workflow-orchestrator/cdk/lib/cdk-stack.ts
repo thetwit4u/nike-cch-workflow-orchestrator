@@ -96,11 +96,6 @@ export class CchWorkflowOrchestratorStack extends Stack {
             },
         });
 
-        const replyQueue = new sqs.Queue(this, 'OrchestratorReplyQueue', {
-            queueName: `${mainPrefix}-reply-queue-${env}${ownerSuffix}`,
-            visibilityTimeout: Duration.seconds(300),
-        });
-
         // --- DynamoDB State Table ---
         const stateTable = new dynamodb.Table(this, 'WorkflowStateTable', {
             tableName: `${mainPrefix}-workflow-state-table-${env}${ownerSuffix}`,
@@ -145,7 +140,6 @@ export class CchWorkflowOrchestratorStack extends Stack {
             DEFINITIONS_BUCKET_NAME: definitionsBucketName,
             COMMAND_QUEUE_URL: commandQueue.queueUrl,
             COMMAND_QUEUE_ARN: commandQueue.queueArn,
-            REPLY_QUEUE_URL: replyQueue.queueUrl,
             SCHEDULER_ROLE_ARN: schedulerRole.roleArn,
             SCHEDULER_GROUP_NAME: schedulerGroupName,
             DISABLE_OPENTELEMETRY: process.env.DISABLE_OPENTELEMETRY || 'false',
@@ -199,7 +193,6 @@ export class CchWorkflowOrchestratorStack extends Stack {
 
         // --- Permissions ---
         orchestratorLambda.addEventSource(new SqsEventSource(commandQueue));
-        orchestratorLambda.addEventSource(new SqsEventSource(replyQueue));
         internalDefinitionsBucket.grantRead(orchestratorLambda);
         workFlowDefinitionsBucket.grantRead(orchestratorLambda);
         eventdataBucket.grantReadWrite(orchestratorLambda);
