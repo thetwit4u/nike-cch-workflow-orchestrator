@@ -30,7 +30,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
 
         // --- Context and Environment Variables ---
         const env = this.node.tryGetContext('env') || process.env.ENVIRONMENT || 'st';
-        const owner = this.node.tryGetContext('owner') || process.env.CCH_OWNER || 'userid';
+        const owner = this.node.tryGetContext('owner') || process.env.CCH_OWNER || '';
         const isTestEnv = props?.isTestEnv ?? (this.node.tryGetContext('test') === 'true');
         const authorizedServicesList = process.env.AUTHORIZED_COMMAND_QUEUE_SENDERS || '';
         const testExecutorArn = process.env.TEST_EXECUTOR_ARN;
@@ -96,11 +96,6 @@ export class CchWorkflowOrchestratorStack extends Stack {
             },
         });
 
-        const replyQueue = new sqs.Queue(this, 'OrchestratorReplyQueue', {
-            queueName: `${mainPrefix}-reply-queue-${env}${ownerSuffix}`,
-            visibilityTimeout: Duration.seconds(300),
-        });
-
         // --- DynamoDB State Table ---
         const stateTable = new dynamodb.Table(this, 'WorkflowStateTable', {
             tableName: `${mainPrefix}-workflow-state-table-${env}${ownerSuffix}`,
@@ -111,7 +106,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
         });
 
         // --- S3 Buckets ---
-        const definitionsBucket = new s3.Bucket(this, 'WorkflowDefinitionsBucket', {
+        const internalDefinitionsBucket = new s3.Bucket(this, 'InternalWorkflowDefinitionsBucket', {
             bucketName: `${definitionsBucketPrefix}-${env}${ownerSuffix}`,
             versioned: true,
             removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -125,6 +120,8 @@ export class CchWorkflowOrchestratorStack extends Stack {
             autoDeleteObjects: true,
         });
 
+        const workFlowDefinitionsBucket = s3.Bucket.fromBucketArn(this, 'WorkflowDefinitionsBucketImport', `arn:aws:s3:::cch-flow-controller-definitions-${env}-${cdk.Aws.REGION}`);
+
         // --- EventBridge Scheduler ---
         const schedulerGroupName = `${mainPrefix}-schedules-${env}${ownerSuffix}`;
         const schedulerRole = new iam.Role(this, 'SchedulerRole', {
@@ -136,12 +133,13 @@ export class CchWorkflowOrchestratorStack extends Stack {
         });
 
         // --- Orchestrator Lambda Function (Conditional Build) ---
+        const definitionsBucketName = (process.env.SERVICE_NAME && process.env.SERVICE_VERSION) ? workFlowDefinitionsBucket.bucketName : internalDefinitionsBucket.bucketName;
+
         let commonLambdaEnv: { [key: string]: string } = {
             STATE_TABLE_NAME: stateTable.tableName,
-            DEFINITIONS_BUCKET_NAME: definitionsBucket.bucketName,
+            DEFINITIONS_BUCKET_NAME: definitionsBucketName,
             COMMAND_QUEUE_URL: commandQueue.queueUrl,
             COMMAND_QUEUE_ARN: commandQueue.queueArn,
-            REPLY_QUEUE_URL: replyQueue.queueUrl,
             SCHEDULER_ROLE_ARN: schedulerRole.roleArn,
             SCHEDULER_GROUP_NAME: schedulerGroupName,
             DISABLE_OPENTELEMETRY: process.env.DISABLE_OPENTELEMETRY || 'false',
@@ -195,8 +193,8 @@ export class CchWorkflowOrchestratorStack extends Stack {
 
         // --- Permissions ---
         orchestratorLambda.addEventSource(new SqsEventSource(commandQueue));
-        orchestratorLambda.addEventSource(new SqsEventSource(replyQueue));
-        definitionsBucket.grantRead(orchestratorLambda);
+        internalDefinitionsBucket.grantRead(orchestratorLambda);
+        workFlowDefinitionsBucket.grantRead(orchestratorLambda);
         eventdataBucket.grantReadWrite(orchestratorLambda);
         stateTable.grantReadWriteData(orchestratorLambda);
 
@@ -223,7 +221,8 @@ export class CchWorkflowOrchestratorStack extends Stack {
             }));
             commandQueue.grantSendMessages(testExecutorRole);
             stateTable.grantReadData(testExecutorRole);
-            definitionsBucket.grantReadWrite(testExecutorRole);
+            internalDefinitionsBucket.grantReadWrite(testExecutorRole);
+            workFlowDefinitionsBucket.grantReadWrite(testExecutorRole);
             eventdataBucket.grantReadWrite(testExecutorRole);
             fallbackCapabilityQueue.grantSendMessages(testExecutorRole);
             fallbackCapabilityQueue.grantConsumeMessages(testExecutorRole);
@@ -238,9 +237,6 @@ export class CchWorkflowOrchestratorStack extends Stack {
             actions: ['scheduler:CreateSchedule', 'scheduler:UpdateSchedule', 'scheduler:DeleteSchedule', 'scheduler:GetSchedule'],
             resources: [`arn:aws:scheduler:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:schedule/${schedulerGroupName}/*`],
         }));
-
-        const workFlowDefinitionsBucket = s3.Bucket.fromBucketArn(this, 'WorkflowDefinitionsBucket', `arn:aws:s3:::cch-flow-controller-definitions-${env}-${cdk.Aws.REGION}`);
-        workFlowDefinitionsBucket.grantReadWrite(orchestratorLambda);
 
         if (authorizedServicesList) {
             const authorizedServices = authorizedServicesList.split(',').map(s => s.trim()).filter(s => s);
@@ -262,7 +258,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
         });
         new cdk.CfnOutput(this, 'OrchestratorCommandQueueUrl', { value: commandQueue.queueUrl });
         new cdk.CfnOutput(this, 'WorkflowStateTableName', { value: stateTable.tableName });
-        new cdk.CfnOutput(this, 'DefinitionsBucketName', { value: definitionsBucket.bucketName });
+        new cdk.CfnOutput(this, 'DefinitionsBucketName', { value: definitionsBucketName });
         new cdk.CfnOutput(this, 'IngestBucketName', { value: eventdataBucket.bucketName });
     }
 }

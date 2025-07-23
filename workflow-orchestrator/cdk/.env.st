@@ -8,13 +8,12 @@
 # Format: comma-separated list of ARNs or function/service names
 # AUTHORIZED_COMMAND_QUEUE_SENDERS=lambda:function:external-service-1,lambda:function:external-service-2,123456789012:role/external-service-role
 # To specify full ARNs, use:
-#AUTHORIZED_COMMAND_QUEUE_SENDERS=arn:aws:lambda:eu-west-1:679172460410:function:external-service-1
+AUTHORIZED_COMMAND_QUEUE_SENDERS=arn:aws:lambda:us-east-1:679172460410:function:cch-flow-controller-initiator
 
 # Capability Queue URLs for Workflow Orchestrator
 # These are automatically passed to the Lambda function environment
 # AWS Lambda functions associated with these queues are automatically granted SendMessage permissions to the command queue
-CCH_CAPABILITY_REVERSE_IMAGE_SEARCH=https://sqs.eu-west-1.amazonaws.com/123456789012/cch-capability-ris-dev-david
-CCH_CAPABILITY_IMAGE_METADATA=https://sqs.eu-west-1.amazonaws.com/123456789012/cch-capability-im-dev-david
+CCH_CAPABILITY_IMPORT=https://sqs.us-east-1.amazonaws.com/679172460410/cch-enrichment
 
 # Add more capability queue URLs as needed
 # CCH_CAPABILITY_<CAPABILITY_NAME>=<SQS_QUEUE_URL>
