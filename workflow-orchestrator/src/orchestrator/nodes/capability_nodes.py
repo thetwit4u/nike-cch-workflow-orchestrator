@@ -91,15 +91,24 @@ def handle_async_request(state: WorkflowState, node_config: dict, node_name: str
         # The create_command_message function already creates the full message envelope
         full_command_message = parser.create_command_message(command_type="ASYNC_REQ")
 
-        # Determine the endpoint (SQS queue URL) for the capability service
+        # Determine the endpoint: try specific capability queue first, then fallback
         service_name = capability_id.split('#')[0].upper()
-        endpoint_key_1 = f"CCH_MOCK_HTTP_ENDPOINT_{service_name}"
-        endpoint_key_2 = f"CCH_CAPABILITY_{service_name}"
-        queue_url = os.environ.get(endpoint_key_1) or os.environ.get(endpoint_key_2)
-
-        if not queue_url:
-            raise ValueError(f"Endpoint for capability service '{service_name}' is not configured. "
-                             f"Checked for '{endpoint_key_1}' and '{endpoint_key_2}'.")
+        capability_key = f"CCH_CAPABILITY_{service_name}"
+        
+        # Try specific capability queue first
+        queue_url = os.environ.get(capability_key)
+        
+        if queue_url:
+            logger.info(f"Using specific capability queue for '{service_name}': {queue_url}")
+        else:
+            # Fall back to the generic fallback queue
+            fallback_queue_url = os.environ.get('FALLBACK_CAPABILITY_QUEUE_URL')
+            if fallback_queue_url:
+                queue_url = fallback_queue_url
+                logger.info(f"No specific queue found for '{service_name}', using fallback queue: {queue_url}")
+            else:
+                raise ValueError(f"No capability endpoint configured for service '{service_name}' and no fallback queue available. "
+                                 f"Set either {capability_key} or FALLBACK_CAPABILITY_QUEUE_URL.")
         
         queue_client = QueueClient()
         queue_client.send_message(queue_url, full_command_message)

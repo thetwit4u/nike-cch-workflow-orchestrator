@@ -82,23 +82,22 @@ export class CchWorkflowOrchestratorStack extends Stack {
         });
 
         // --- SQS Queues ---
+        const deadLetterQueue = new sqs.Queue(this, 'OrchestratorCommandDLQ', {
+            queueName: `${mainPrefix}-command-dlq-${env}${ownerSuffix}`,
+            retentionPeriod: Duration.days(14),
+        });
+
         const commandQueue = new sqs.Queue(this, 'OrchestratorCommandQueue', {
             queueName: `${mainPrefix}-command-queue-${env}${ownerSuffix}`,
             visibilityTimeout: Duration.seconds(300),
+            deadLetterQueue: {
+                maxReceiveCount: 3,
+                queue: deadLetterQueue,
+            },
         });
 
         const replyQueue = new sqs.Queue(this, 'OrchestratorReplyQueue', {
             queueName: `${mainPrefix}-reply-queue-${env}${ownerSuffix}`,
-            visibilityTimeout: Duration.seconds(300),
-        });
-
-        const importRequestQueue = new sqs.Queue(this, 'ImportRequestQueue', {
-            queueName: `${mainPrefix}-capability-import-request-queue-${env}${ownerSuffix}`,
-            visibilityTimeout: Duration.seconds(300),
-        });
-
-        const exportRequestQueue = new sqs.Queue(this, 'ExportRequestQueue', {
-            queueName: `${mainPrefix}-capability-export-request-queue-${env}${ownerSuffix}`,
             visibilityTimeout: Duration.seconds(300),
         });
 
@@ -136,78 +135,13 @@ export class CchWorkflowOrchestratorStack extends Stack {
             name: schedulerGroupName,
         });
 
-        // --- Test Environment Specific Resources ---
-        let mockCapabilityQueue: sqs.Queue | undefined;
-        let mockServiceLambda: python.PythonFunction | undefined;
-        if (isTestEnv) {
-            const mockQueueName = `${mainPrefix}-mock-capability-queue-${env}${ownerSuffix}`;
-            const mockConfigTableName = `${mainPrefix}-mock-config-table-${env}${ownerSuffix}`;
-
-            const mockConfigTable = new dynamodb.Table(this, 'MockConfigTable', {
-                tableName: mockConfigTableName,
-                partitionKey: { name: 'capability_id', type: dynamodb.AttributeType.STRING },
-                billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-                removalPolicy: cdk.RemovalPolicy.DESTROY,
-            });
-
-            mockCapabilityQueue = new sqs.Queue(this, 'MockCapabilityQueue', {
-                queueName: mockQueueName,
-                visibilityTimeout: Duration.seconds(300),
-            });
-            capabilityEnvVars['CCH_CAPABILITY_IMPORT'] = mockCapabilityQueue.queueUrl;
-
-            mockServiceLambda = new python.PythonFunction(this, 'CapabilityMockServiceFunction', {
-                functionName: `${mainPrefix}-mock-lambda-${env}${ownerSuffix}`,
-                entry: path.join(__dirname, '../../capability-mock-service'),
-                runtime: lambda.Runtime.PYTHON_3_13,
-                index: 'app.py',
-                handler: 'handler',
-                environment: {
-                    MOCK_CONFIG_TABLE_NAME: mockConfigTable.tableName,
-                    ORCHESTRATOR_COMMAND_QUEUE_URL: commandQueue.queueUrl,
-                    REPLY_QUEUE_URL: replyQueue.queueUrl, // Mock also sends to reply queue
-                    LOG_LEVEL: 'INFO',
-                    VERSION: new Date().toISOString(),
-                },
-                timeout: Duration.seconds(30),
-            });
-            mockServiceLambda.addEventSource(new SqsEventSource(mockCapabilityQueue)); // Test mock listens to its dedicated queue
-            mockConfigTable.grantReadWriteData(mockServiceLambda);
-            commandQueue.grantSendMessages(mockServiceLambda);
-            replyQueue.grantSendMessages(mockServiceLambda);
-            eventdataBucket.grantRead(mockServiceLambda);
-
-            new cdk.CfnOutput(this, 'MockConfigTableName', { value: mockConfigTable.tableName });
-            new cdk.CfnOutput(this, 'MockCapabilityQueueUrl', { value: mockCapabilityQueue.queueUrl });
-
-            if (testExecutorArn) {
-                const testExecutorRole = new iam.Role(this, 'TestExecutorRole', {
-                    roleName: `${mainPrefix}-test-executor-role-${env}${ownerSuffix}`,
-                    assumedBy: new iam.ArnPrincipal(testExecutorArn),
-                });
-                testExecutorRole.assumeRolePolicy?.addStatements(new iam.PolicyStatement({
-                    actions: ['sts:TagSession'],
-                    principals: [new iam.ArnPrincipal(testExecutorArn)],
-                }));
-                commandQueue.grantSendMessages(testExecutorRole);
-                stateTable.grantReadData(testExecutorRole);
-                definitionsBucket.grantReadWrite(testExecutorRole);
-                eventdataBucket.grantReadWrite(testExecutorRole);
-                mockCapabilityQueue.grantSendMessages(testExecutorRole);
-                mockConfigTable.grantReadWriteData(testExecutorRole);
-                new cdk.CfnOutput(this, 'TestExecutorRoleArn', { value: testExecutorRole.roleArn });
-            }
-        }
-
         // --- Orchestrator Lambda Function (Conditional Build) ---
-        const commonLambdaEnv = {
+        let commonLambdaEnv: { [key: string]: string } = {
             STATE_TABLE_NAME: stateTable.tableName,
             DEFINITIONS_BUCKET_NAME: definitionsBucket.bucketName,
             COMMAND_QUEUE_URL: commandQueue.queueUrl,
             COMMAND_QUEUE_ARN: commandQueue.queueArn,
             REPLY_QUEUE_URL: replyQueue.queueUrl,
-            IMPORT_QUEUE_URL: importRequestQueue.queueUrl,
-            EXPORT_QUEUE_URL: exportRequestQueue.queueUrl,
             SCHEDULER_ROLE_ARN: schedulerRole.roleArn,
             SCHEDULER_GROUP_NAME: schedulerGroupName,
             DISABLE_OPENTELEMETRY: process.env.DISABLE_OPENTELEMETRY || 'false',
@@ -265,11 +199,37 @@ export class CchWorkflowOrchestratorStack extends Stack {
         definitionsBucket.grantRead(orchestratorLambda);
         eventdataBucket.grantReadWrite(orchestratorLambda);
         stateTable.grantReadWriteData(orchestratorLambda);
-        importRequestQueue.grantSendMessages(orchestratorLambda);
-        exportRequestQueue.grantSendMessages(orchestratorLambda);
-        if (mockCapabilityQueue) {
-            mockCapabilityQueue.grantSendMessages(orchestratorLambda);
+
+        // Always create the fallback capability queue for debugging and missing capabilities
+        const fallbackCapabilityQueue = new sqs.Queue(this, 'FallbackCapabilityQueue', {
+            queueName: `${mainPrefix}-fallback-capability-queue-${env}${ownerSuffix}`,
+            visibilityTimeout: Duration.seconds(300),
+        });
+        fallbackCapabilityQueue.grantSendMessages(orchestratorLambda);
+        new cdk.CfnOutput(this, 'FallbackCapabilityQueueUrl', { value: fallbackCapabilityQueue.queueUrl });
+
+        // Always provide the fallback queue as a generic fallback for any missing capabilities
+        orchestratorLambda.addEnvironment('FALLBACK_CAPABILITY_QUEUE_URL', fallbackCapabilityQueue.queueUrl);
+
+        // Test environment specific resources
+        if (isTestEnv && testExecutorArn) {
+            const testExecutorRole = new iam.Role(this, 'TestExecutorRole', {
+                roleName: `${mainPrefix}-test-executor-role-${env}${ownerSuffix}`,
+                assumedBy: new iam.ArnPrincipal(testExecutorArn),
+            });
+            testExecutorRole.assumeRolePolicy?.addStatements(new iam.PolicyStatement({
+                actions: ['sts:TagSession'],
+                principals: [new iam.ArnPrincipal(testExecutorArn)],
+            }));
+            commandQueue.grantSendMessages(testExecutorRole);
+            stateTable.grantReadData(testExecutorRole);
+            definitionsBucket.grantReadWrite(testExecutorRole);
+            eventdataBucket.grantReadWrite(testExecutorRole);
+            fallbackCapabilityQueue.grantSendMessages(testExecutorRole);
+            fallbackCapabilityQueue.grantConsumeMessages(testExecutorRole);
+            new cdk.CfnOutput(this, 'TestExecutorRoleArn', { value: testExecutorRole.roleArn });
         }
+
         orchestratorLambda.addToRolePolicy(new iam.PolicyStatement({
             actions: ['iam:PassRole'],
             resources: [schedulerRole.roleArn],
@@ -300,12 +260,6 @@ export class CchWorkflowOrchestratorStack extends Stack {
             logGroupName: orchestratorLambda.logGroup.logGroupName,
             retention: logs.RetentionDays.ONE_WEEK,
         });
-        if (mockServiceLambda) {
-            new logs.LogRetention(this, 'MockServiceLogRetention', {
-                logGroupName: mockServiceLambda.logGroup.logGroupName,
-                retention: logs.RetentionDays.ONE_DAY,
-            });
-        }
         new cdk.CfnOutput(this, 'OrchestratorCommandQueueUrl', { value: commandQueue.queueUrl });
         new cdk.CfnOutput(this, 'WorkflowStateTableName', { value: stateTable.tableName });
         new cdk.CfnOutput(this, 'DefinitionsBucketName', { value: definitionsBucket.bucketName });

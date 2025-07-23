@@ -1,0 +1,18 @@
+{
+    "command": "capability_response",
+    "status": "SUCCESS",
+    "data": {
+        "consignmentImportEnrichedId": "84ab4a4f-7d85-415a-a0fd-dffc41204bcd",
+        "consignmentImportEnrichedURI": "s3://import-test/CMAU7116574-CMDUDJA1345731/consignment-enriched.json",
+        "importFilingPacks": [
+            {
+                "filingPackId": "fpk-1234567890",
+                "filingPackURI": "s3://cch-filingpacks-dev/CMAU7116574-CMDUDJA1345731/filing-pack.json"
+            },
+            {
+                "filingPackId": "fpk-0987654321",
+                "filingPackURI": "s3://cch-filingpacks-dev/CMAU7116574-CMDUDJA1345731/filing-pack-2.json"
+            }
+        ]
+    }
+}

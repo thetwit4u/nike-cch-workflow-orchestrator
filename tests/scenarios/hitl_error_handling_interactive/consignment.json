@@ -1,0 +1,8 @@
+{
+    "consignment": {
+        "consignmentId": "test-hitl-error-retry-12345",
+        "billOfLadingNbr": "HITL-TRIGGER",
+        "plannedDischargeDate": "2025-08-01T10:00:00Z",
+        "totalShipmentCount": 1
+    }
+}

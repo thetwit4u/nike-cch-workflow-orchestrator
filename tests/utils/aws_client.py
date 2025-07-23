@@ -227,6 +227,25 @@ class AWSClient:
             logger.error(f"Failed to send message to {queue_url}: {e}")
             raise
 
+    def delete_sqs_message(self, queue_url: str, receipt_handle: str):
+        """
+        Deletes a message from an SQS queue.
+
+        Args:
+            queue_url: The URL of the SQS queue.
+            receipt_handle: The receipt handle of the message to delete.
+        """
+        logger.info(f"Deleting message from SQS queue: {queue_url}")
+        try:
+            self.sqs_client.delete_message(
+                QueueUrl=queue_url,
+                ReceiptHandle=receipt_handle
+            )
+            logger.info("Message deleted successfully.")
+        except Exception as e:
+            logger.error(f"Failed to delete message from {queue_url}: {e}")
+            raise
+
     def upload_json_to_s3(self, bucket: str, object_key: str, data: dict):
         """
         Uploads a Python dictionary as a JSON object to an S3 bucket.

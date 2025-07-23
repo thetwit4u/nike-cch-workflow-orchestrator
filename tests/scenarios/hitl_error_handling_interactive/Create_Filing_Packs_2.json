@@ -1,0 +1,14 @@
+{
+    "command": "capability_response",
+    "status": "SUCCESS",
+    "data": {
+        "consignmentImportEnrichedId": "ENRICHED-HITL-RETRY-12345",
+        "consignmentImportEnrichedURI": "s3://import-test/HITL-RETRY/consignment-enriched.json",
+        "importFilingPacks": [
+            {
+                "filingPackId": "fpk-hitl-retry-001",
+                "filingPackURI": "s3://cch-filingpacks-dev/HITL-RETRY/filing-pack.json"
+            }
+        ]
+    }
+}
