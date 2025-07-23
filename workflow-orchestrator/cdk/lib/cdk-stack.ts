@@ -239,6 +239,9 @@ export class CchWorkflowOrchestratorStack extends Stack {
             resources: [`arn:aws:scheduler:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:schedule/${schedulerGroupName}/*`],
         }));
 
+        const workFlowDefinitionsBucket = s3.Bucket.fromBucketArn(this, 'WorkflowDefinitionsBucket', `arn:aws:s3:::cch-flow-controller-definitions-${env}-${cdk.Aws.REGION}`);
+        workFlowDefinitionsBucket.grantReadWrite(orchestratorLambda);
+
         if (authorizedServicesList) {
             const authorizedServices = authorizedServicesList.split(',').map(s => s.trim()).filter(s => s);
             if (authorizedServices.length > 0) {
