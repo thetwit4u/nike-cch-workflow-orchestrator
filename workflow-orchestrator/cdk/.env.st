@@ -8,7 +8,7 @@
 # Format: comma-separated list of ARNs or function/service names
 # AUTHORIZED_COMMAND_QUEUE_SENDERS=lambda:function:external-service-1,lambda:function:external-service-2,123456789012:role/external-service-role
 # To specify full ARNs, use:
-AUTHORIZED_COMMAND_QUEUE_SENDERS=arn:aws:lambda:us-east-1:679172460410:function:cch-flow-controller-initiator
+AUTHORIZED_COMMAND_QUEUE_SENDERS=arn:aws:iam::679172460410:role/FlowControllerInitiatorLa-LambdaExecutionRoleD5C260-G4bJLS8v0Xok
 
 # Capability Queue URLs for Workflow Orchestrator
 # These are automatically passed to the Lambda function environment
