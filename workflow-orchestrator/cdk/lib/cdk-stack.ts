@@ -191,6 +191,21 @@ export class CchWorkflowOrchestratorStack extends Stack {
             });
         }
 
+        // Grant permissions to send messages to capability queues
+        for (const queueUrl of Object.values(capabilityEnvVars)) {
+            const queueName = queueUrl.split('/').pop();
+            if (queueName) {
+                const queueArn = Stack.of(this).formatArn({
+                    service: 'sqs',
+                    resource: queueName,
+                });
+                orchestratorLambda.addToRolePolicy(new iam.PolicyStatement({
+                    actions: ['sqs:SendMessage'],
+                    resources: [queueArn],
+                }));
+            }
+        }
+
         // --- Permissions ---
         orchestratorLambda.addEventSource(new SqsEventSource(commandQueue));
         internalDefinitionsBucket.grantRead(orchestratorLambda);
