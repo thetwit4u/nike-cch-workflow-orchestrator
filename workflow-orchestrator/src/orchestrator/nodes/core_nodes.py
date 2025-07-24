@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 def handle_event_wait(state: WorkflowState, node_config: dict, node_name: str):
     """
     Handles an 'event_wait' node by pausing graph execution.
-    The workflow will wait for an external command (e.g., HITL_RESP) to resume.
+    The workflow will wait for an external command (e.g., EVENT_WAIT_RESP) to resume.
     """
     logger.info(f"Executing 'event_wait' node '{node_name}'. Pausing for external event.")
     return interrupt("Pausing for external event.")

@@ -44,3 +44,4 @@ cdk.context.json
 
 # CDK outputs
 workflow-orchestrator/cdk/cdk-outputs.json
+JIRA.md
