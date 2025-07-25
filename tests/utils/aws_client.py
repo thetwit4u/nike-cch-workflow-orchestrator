@@ -160,10 +160,7 @@ class AWSClient:
             )
             messages = response.get("Messages", [])
             logger.info(f"Retrieved {len(messages)} messages.")
-            # Parse the message body from JSON string to dict
-            for msg in messages:
-                if 'Body' in msg:
-                    msg['Body'] = json.loads(msg['Body'])
+            # The message body is a JSON string, so we return it as is.
             return messages
         except Exception as e:
             logger.error(f"Failed to retrieve messages from {queue_url}: {e}")

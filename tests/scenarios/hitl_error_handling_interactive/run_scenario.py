@@ -125,8 +125,10 @@ class InteractiveTestRunner:
         )
         if messages:
             message = messages[0]
-            # AWSClient already parses the JSON, so message['Body'] is already a dict
-            return message['Body'], message['ReceiptHandle']
+            # The body is a JSON string, so we need to parse it.
+            body = json.loads(message['Body'])
+            # Return both the parsed message body and the receipt handle for deletion
+            return body, message['ReceiptHandle']
         return None
 
     def run(self):
@@ -198,7 +200,7 @@ class InteractiveTestRunner:
                 print("-----------------------------------")
 
                 # Map capability_id to node name for finding response files
-                capability_id = capability_message.get('command', {}).get('capability_id', '')
+                capability_id = capability_message.get('body', {}).get('capability_id', '')
                 # Map capability ID to node name (e.g., "import#create_filingpacks" -> "Create_Filing_Packs")
                 capability_to_node = {
                     'import#create_filingpacks': 'Create_Filing_Packs',
@@ -223,21 +225,28 @@ class InteractiveTestRunner:
                 with open(response_file, 'r') as f:
                     response_payload = json.load(f)
 
+                # The original_request is the message from the queue, with a header and body.
+                original_header = capability_message.get('header', {})
+
                 # Create a proper response message structure
                 response_message = {
-                    "workflowInstanceId": capability_message.get('workflowInstanceId'),
-                    "correlationId": capability_message.get('correlationId'),
-                    "workflowDefinitionURI": capability_message.get('workflowDefinitionURI'),
+                    "workflowInstanceId": original_header.get('workflowInstanceId'),
+                    "correlationId": original_header.get('correlationId'),
+                    "workflowDefinitionURI": original_header.get('workflowDefinitionURI'),
                     "command": {
                         "type": "ASYNC_RESP",
                         "id": str(uuid.uuid4()),
                         "source": "MockCapabilityService",
                         "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "in_reply_to": capability_message.get('command', {}).get('id'),
+                        "in_reply_to": original_header.get('commandId'),
                         "status": "SUCCESS" if response_payload.get('status') == 'SUCCESS' else 'ERROR',
                         "payload": response_payload.get('data', {})
                     }
                 }
+
+                # Add routing hint if it was in the original request's header
+                if 'routingHint' in original_header:
+                    response_message['command']['routingHint'] = original_header['routingHint']
 
                 print(f"\nFound response file: {response_file.name}")
                 print("Response payload:")

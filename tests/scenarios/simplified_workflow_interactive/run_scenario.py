@@ -132,8 +132,10 @@ class InteractiveTestRunner:
         )
         if messages:
             message = messages[0]
+            # The body is a JSON string, so we need to parse it.
+            body = json.loads(message['Body'])
             # Return both the parsed message body and the receipt handle for deletion
-            return message['Body'], message['ReceiptHandle']
+            return body, message['ReceiptHandle']
         return None
 
     def _get_capability_request(self) -> dict | None:
@@ -162,22 +164,29 @@ class InteractiveTestRunner:
         """Loads a response file and sends it back to the orchestrator."""
         with open(response_file, 'r') as f:
             response_payload = json.load(f)
-        
-        # Create a proper response message structure
+
+        # The original_request is the message from the queue, with a header and body.
+        original_header = original_request.get('header', {})
+
+        # Create a proper response message structure that the orchestrator expects
         response_message = {
-            "workflowInstanceId": original_request.get('workflowInstanceId'),
-            "correlationId": original_request.get('correlationId'),
-            "workflowDefinitionURI": original_request.get('workflowDefinitionURI'),
+            "workflowInstanceId": original_header.get('workflowInstanceId'),
+            "correlationId": original_header.get('correlationId'),
+            "workflowDefinitionURI": original_header.get('workflowDefinitionURI'),
             "command": {
                 "type": "ASYNC_RESP",
                 "id": str(uuid.uuid4()),
                 "source": "MockCapabilityService",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "in_reply_to": original_request.get('command', {}).get('id'),
+                "in_reply_to": original_header.get('commandId'),
                 "status": "SUCCESS" if response_payload.get('status') == 'SUCCESS' else 'ERROR',
                 "payload": response_payload.get('data', {})
             }
         }
+        
+        # Add routing hint if it was in the original request's header
+        if 'routingHint' in original_header:
+            response_message['command']['routingHint'] = original_header['routingHint']
         
         print(f"Found response file: {response_file.name}")
         print("Response payload:")
@@ -248,7 +257,7 @@ class InteractiveTestRunner:
             else:
                 print("❌ Workflow did not complete within timeout")
                 # Get the latest state for debugging
-                latest_state = self.workflow_verifier.get_latest_state(correlation_id)
+                latest_state = self.workflow_verifier.get_latest_state(.correlation_id)
                 if latest_state:
                     context = latest_state.get("context", {})
                     current_node = context.get("current_node", "Unknown")
@@ -262,7 +271,6 @@ class InteractiveTestRunner:
             print("   This might indicate the workflow failed or is still running")
 
     def run(self):
-        """Executes the interactive test scenario."""
         print("--- Starting Interactive Workflow Scenario ---")
         if not PYGMENTS_AVAILABLE:
             print("💡 Tip: Install 'pygments' for colorized JSON output: pip install pygments")
@@ -330,8 +338,8 @@ class InteractiveTestRunner:
             print("-----------------------------------")
 
             # Extract capability information to determine response
-            capability_id = capability_message.get('command', {}).get('capability_id')
-            command_id = capability_message.get('command', {}).get('id')
+            capability_id = capability_message.get('body', {}).get('capability_id')
+            command_id = capability_message.get('header', {}).get('commandId')
             
             # Map capability_id to node name (based on workflow definition)
             node_name = self._map_capability_to_node(capability_id)

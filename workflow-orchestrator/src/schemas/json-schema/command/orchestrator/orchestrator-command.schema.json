@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "OrchestratorCommand",
   "description": "Command for Workflow Orchestrator; The standard payload sent to the Workflow Orchestrator to initiate or advance a workflow.",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "$defs": {
     "CchMessage": {
       "title": "CCH Message",
@@ -105,7 +105,7 @@
           "enum": [
             "EVENT",
             "ASYNC_RESP",
-            "HITL_RESP"
+            "EVENT_WAIT_RESP"
           ]
         },
         "id": {

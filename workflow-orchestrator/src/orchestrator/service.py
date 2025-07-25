@@ -111,7 +111,7 @@ class OrchestratorService:
                     adapter.info("Duplicate trigger event received for in-progress workflow. Ignoring.")
                     return
 
-            elif command_type in ['ASYNC_RESP', 'HITL_RESP']:
+            elif command_type in ['ASYNC_RESP', 'EVENT_WAIT_RESP']:
                 # Universal logic for resuming from a pause
                 adapter.info(f"Processing {command_type} for main thread '{instance_id}'.")
                     
@@ -129,7 +129,7 @@ class OrchestratorService:
 
                 if command_type == 'ASYNC_RESP':
                     transition_node = node_def.get("on_response")
-                else: # HITL_RESP
+                else: # EVENT_WAIT_RESP
                     transition_node = node_def.get("on_success")
 
                 if not transition_node:

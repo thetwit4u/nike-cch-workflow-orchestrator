@@ -3,7 +3,7 @@
     "correlationId": "PLACEHOLDER_CORRELATION_ID",
     "workflowDefinitionURI": "PLACEHOLDER_WORKFLOW_DEFINITION_URI",
     "command": {
-        "type": "HITL_RESP",
+        "type": "EVENT_WAIT_RESP",
         "id": "PLACEHOLDER_COMMAND_ID",
         "source": "InteractiveTestScript",
         "timestamp": "PLACEHOLDER_TIMESTAMP",

@@ -63,11 +63,11 @@ def _base_action(state: Dict[str, Any], config: Dict[str, Any], node_config: Dic
 def handle_sync_call(state: WorkflowState, node_config: dict, node_name: str) -> WorkflowState:
     """
     Handles a 'sync_call' node by pausing execution.
-    The workflow will wait for an external 'HITL_RESP' command to resume.
+    The workflow will wait for an external 'EVENT_WAIT_RESP' command to resume.
     """
     try:
         logger.info(f"Executing 'sync_call' node '{node_name}'. Pausing for Human-in-the-Loop response.")
-        # We must interrupt execution here to wait for the HITL_RESP.
+        # We must interrupt execution here to wait for the EVENT_WAIT_RESP.
         # A real implementation would also send a message to a UI or notification service.
         return interrupt()
     except Exception as e:
