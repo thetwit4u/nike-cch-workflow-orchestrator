@@ -1,6 +1,7 @@
 import os
 import logging
 from opentelemetry import trace
+from opentelemetry.instrumentation.boto3sqs import Boto3SQSInstrumentor
 from opentelemetry.instrumentation.botocore import BotocoreInstrumentor
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
 from opentelemetry.instrumentation.requests import RequestsInstrumentor
@@ -35,6 +36,7 @@ def setup_telemetry():
     # Instrument libraries
     LoggingInstrumentor().instrument(set_logging_format=True)
     BotocoreInstrumentor().instrument(tracer_provider=provider)
+    Boto3SQSInstrumentor().instrument(tracer_provider=provider)
     RequestsInstrumentor().instrument(tracer_provider=provider)
 
     tracer = trace.get_tracer("com.nike.cch.workflow-orchestrator")
