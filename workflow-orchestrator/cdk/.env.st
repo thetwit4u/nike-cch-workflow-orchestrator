@@ -15,5 +15,9 @@ AUTHORIZED_COMMAND_QUEUE_SENDERS=arn:aws:iam::679172460410:role/FlowControllerIn
 # AWS Lambda functions associated with these queues are automatically granted SendMessage permissions to the command queue
 CCH_CAPABILITY_IMPORT=https://sqs.us-east-1.amazonaws.com/679172460410/cch-enrichment
 
+
+# If not set, the fallback sns topic with SQS queue is created automatically.
+SNS_TOPIC_CCH_EVENTS_ARN=""
+
 # Add more capability queue URLs as needed
 # CCH_CAPABILITY_<CAPABILITY_NAME>=<SQS_QUEUE_URL>

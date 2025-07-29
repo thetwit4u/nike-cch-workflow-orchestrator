@@ -12,8 +12,10 @@ import {
     Tags,
     aws_iam as iam,
     aws_scheduler as scheduler,
-    aws_ecr as ecr
+    aws_ecr as ecr,
+    aws_sns as sns
 } from 'aws-cdk-lib';
+import * as subs from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as python from '@aws-cdk/aws-lambda-python-alpha';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as path from 'path';
@@ -52,6 +54,38 @@ export class CchWorkflowOrchestratorStack extends Stack {
         const definitionsBucketPrefix = 'cch-flow-definitions';
         const platformType = 'core';
         const dataClassification = 'ru';
+
+        // --- SNS System Events Topic (Conditional) ---
+        const systemEventsTopicArn = process.env.SNS_TOPIC_CCH_EVENTS_ARN;
+        let systemEventsTopic: sns.ITopic;
+        let systemEventsTestListenerQueue: sqs.Queue | undefined;
+
+        if (systemEventsTopicArn) {
+            // If an ARN is provided via environment variables, import the existing topic.
+            // This allows for a centrally managed topic in the future.
+            systemEventsTopic = sns.Topic.fromTopicArn(this, 'ImportedSystemEventsTopic', systemEventsTopicArn);
+        } else {
+            // If no ARN is provided, create a fallback topic.
+            // This is useful for isolated/dev environments.
+            const fallbackTopic = new sns.Topic(this, 'FallbackSystemEventsTopic', {
+                topicName: `cch-system-events-fallback-${env}${ownerSuffix}.fifo`,
+                fifo: true,
+                contentBasedDeduplication: true,
+            });
+            systemEventsTopic = fallbackTopic;
+
+            // If it's a test environment, create a listener queue and subscribe it to the fallback topic.
+            if (isTestEnv) {
+                systemEventsTestListenerQueue = new sqs.Queue(this, 'SystemEventsTestListenerQueue', {
+                    queueName: `${mainPrefix}-system-events-listener-queue-${env}${ownerSuffix}.fifo`,
+                    fifo: true,
+                    visibilityTimeout: Duration.seconds(300),
+                });
+                fallbackTopic.addSubscription(new subs.SqsSubscription(systemEventsTestListenerQueue, { rawMessageDelivery: true }));
+
+                new cdk.CfnOutput(this, 'SystemEventsTestListenerQueueUrl', { value: systemEventsTestListenerQueue.queueUrl });
+            }
+        }
 
         // Resolve VPC from vpcId
         const vpc = Vpc.fromLookup(this, 'Vpc', { vpcId: (process.env.VPC_ID || '') });
@@ -142,6 +176,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
             COMMAND_QUEUE_ARN: commandQueue.queueArn,
             SCHEDULER_ROLE_ARN: schedulerRole.roleArn,
             SCHEDULER_GROUP_NAME: schedulerGroupName,
+            SYSTEM_EVENTS_TOPIC_ARN: systemEventsTopic.topicArn,
             DISABLE_OPENTELEMETRY: process.env.DISABLE_OPENTELEMETRY || 'false',
             LOG_LEVEL: 'INFO',
             ...capabilityEnvVars,
@@ -212,6 +247,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
         workFlowDefinitionsBucket.grantRead(orchestratorLambda);
         eventdataBucket.grantReadWrite(orchestratorLambda);
         stateTable.grantReadWriteData(orchestratorLambda);
+        systemEventsTopic.grantPublish(orchestratorLambda);
 
         // Always create the fallback capability queue for debugging and missing capabilities
         const fallbackCapabilityQueue = new sqs.Queue(this, 'FallbackCapabilityQueue', {
@@ -241,6 +277,9 @@ export class CchWorkflowOrchestratorStack extends Stack {
             eventdataBucket.grantReadWrite(testExecutorRole);
             fallbackCapabilityQueue.grantSendMessages(testExecutorRole);
             fallbackCapabilityQueue.grantConsumeMessages(testExecutorRole);
+            if (systemEventsTestListenerQueue) {
+                systemEventsTestListenerQueue.grantConsumeMessages(testExecutorRole);
+            }
             new cdk.CfnOutput(this, 'TestExecutorRoleArn', { value: testExecutorRole.roleArn });
         }
 
@@ -274,6 +313,10 @@ export class CchWorkflowOrchestratorStack extends Stack {
         new cdk.CfnOutput(this, 'OrchestratorCommandQueueUrl', { value: commandQueue.queueUrl });
         new cdk.CfnOutput(this, 'WorkflowStateTableName', { value: stateTable.tableName });
         new cdk.CfnOutput(this, 'DefinitionsBucketName', { value: definitionsBucketName });
+        new cdk.CfnOutput(this, 'SystemEventsTopicArn', {
+            value: systemEventsTopic.topicArn,
+            description: 'ARN of the SNS FIFO topic for system events being used by the orchestrator.'
+        });
         new cdk.CfnOutput(this, 'IngestBucketName', { value: eventdataBucket.bucketName });
     }
 }
