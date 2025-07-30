@@ -101,7 +101,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
         );
 
         const logGroup = new logs.LogGroup(this, 'LogGroup', {
-            logGroupName: `/opentelemetry/${platformType}-${dataClassification}/aws/lambda/${process.env.SERVICE_NAME || ''}`,
+            logGroupName: `/opentelemetry/${platformType}-${dataClassification}/aws/lambda/${process.env.SERVICE_NAME || ''}-${env}${ownerSuffix}`,
             removalPolicy: cdk.RemovalPolicy.DESTROY,
             retention: logs.RetentionDays.ONE_WEEK
         });
@@ -112,7 +112,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
                 iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
                 iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaVPCAccessExecutionRole')
             ],
-            roleName: `${mainPrefix}-${env}-${cdk.Aws.REGION}`
+            roleName: `${mainPrefix}-${cdk.Aws.REGION}-${env}`
         });
 
         // --- SQS Queues ---
@@ -154,7 +154,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
             autoDeleteObjects: true,
         });
 
-        const workFlowDefinitionsBucket = s3.Bucket.fromBucketArn(this, 'WorkflowDefinitionsBucketImport', `arn:aws:s3:::cch-flow-controller-definitions-${env}-${cdk.Aws.REGION}`);
+        const workFlowDefinitionsBucket = s3.Bucket.fromBucketArn(this, 'WorkflowDefinitionsBucketImport', `arn:aws:s3:::cch-flow-controller-definitions-${cdk.Aws.REGION}-${env}`);
 
         // --- EventBridge Scheduler ---
         const schedulerGroupName = `${mainPrefix}-schedules-${env}${ownerSuffix}`;
@@ -181,7 +181,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
             LOG_LEVEL: 'INFO',
             ...capabilityEnvVars,
             VERSION: new Date().toISOString(),
-            OTEL_EXPORTER_OTLP_ENDPOINT: `https://trade-${process.env.ENVIRONMENT || 'st'}-otel-${cdk.Aws.REGION}.${process.env.HOSTED_ZONE_NAME || ''}:4318`,
+            OTEL_EXPORTER_OTLP_ENDPOINT: `https://trade-${process.env.ENVIRONMENT?.split('-')[0] || 'st'}-otel-${cdk.Aws.REGION}.${process.env.HOSTED_ZONE_NAME || ''}:4318`,
             OTEL_SERVICE_NAME: process.env.SERVICE_NAME || '',
             OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
             OTEL_LOGS_EXPORTER: 'otlp',
