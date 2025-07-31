@@ -51,5 +51,3 @@ new CchWorkflowOrchestratorStack(app, stackName, {
   isTestEnv: isTest,
   description: `Stack for the CCH Workflow Orchestrator (${env})`
 });
-
-console.log(`End cdk.ts`); // Debug log to indicate end of execution
