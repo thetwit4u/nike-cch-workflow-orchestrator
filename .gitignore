@@ -37,7 +37,6 @@ yarn-error.log*
 
 # CDK Local Configuration
 cdk.local.json 
-PLANNING.md
 TASKS.md
 /schemas/
 cdk.context.json
@@ -45,4 +44,4 @@ cdk.context.json
 # CDK outputs
 workflow-orchestrator/cdk/cdk-outputs.json
 JIRA.md
-PLANNING.md
+#PLANNING.md

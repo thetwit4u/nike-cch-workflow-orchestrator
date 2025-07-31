@@ -257,7 +257,7 @@ class InteractiveTestRunner:
             else:
                 print("❌ Workflow did not complete within timeout")
                 # Get the latest state for debugging
-                latest_state = self.workflow_verifier.get_latest_state(.correlation_id)
+                latest_state = self.workflow_verifier.get_latest_state(correlation_id)
                 if latest_state:
                     context = latest_state.get("context", {})
                     current_node = context.get("current_node", "Unknown")

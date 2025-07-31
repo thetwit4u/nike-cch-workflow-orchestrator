@@ -7,6 +7,8 @@ from clients.http_client import HttpClient
 from lib.langgraph_checkpoint_dynamodb.langgraph_checkpoint_dynamodb.saver import DynamoDBSaver
 from lib.langgraph_checkpoint_dynamodb.langgraph_checkpoint_dynamodb.config import DynamoDBConfig, DynamoDBTableConfig
 from orchestrator.graph_builder import GraphBuilder
+from orchestrator.event_publishing_checkpointer import EventPublishingCheckpointer
+from orchestrator.event_publisher import EventPublisher
 from utils.logging_adapter import WorkflowIdAdapter
 from clients.s3_client import S3Client
 from langgraph.graph.graph import CompiledGraph
@@ -24,6 +26,7 @@ class OrchestratorService:
     def __init__(self):
         self.sqs_client = QueueClient()
         self.http_client = HttpClient()
+        self.event_publisher = EventPublisher()
         table_name = os.environ.get("STATE_TABLE_NAME")
         if not table_name:
             raise ValueError("STATE_TABLE_NAME environment variable not set.")
@@ -61,19 +64,26 @@ class OrchestratorService:
         """Compiles a graph from a URI and adds it to the cache."""
         s3 = S3Client()
         definition = s3.get_workflow_definition(workflow_uri)
-        builder = GraphBuilder(definition, self.state_saver)
+
+        # Create the checkpointer that will publish events.
+        checkpointer_with_events = EventPublishingCheckpointer(
+            saver=self.state_saver,
+            event_publisher=self.event_publisher,
+            workflow_definition=definition
+        )
+
+        builder = GraphBuilder(definition, checkpointer_with_events)
         graph = builder.compile_graph()
-        self.graph_cache[workflow_uri] = graph
-        return graph
+        self.graph_cache[workflow_uri] = (graph, definition) # Cache both
+        return graph, definition
 
     def process_command(self, command_message: dict):
         instance_id = command_message.get('workflowInstanceId')
         adapter = WorkflowIdAdapter(logger, {'workflow_id': instance_id})
         
-        # --- Start: New Command Parsing ---
         command_obj = command_message.get('command', {})
         command_type = command_obj.get('type')
-        command_status = command_obj.get('status') # New required field for responses
+        command_status = command_obj.get('status')
         payload = command_obj.get('payload', {})
         workflow_uri = command_message.get('workflowDefinitionURI')
 
@@ -86,15 +96,12 @@ class OrchestratorService:
         if not all([instance_id, command_type, workflow_uri]):
             adapter.error("Invalid command: Missing 'workflowInstanceId', 'command.type', or 'workflowDefinitionURI'.")
             return
-        # --- End: New Command Parsing ---
 
         try:
-            # For _get_or_compile_graph, we still need to check the payload of the initial event
-            graph = self._get_or_compile_graph(workflow_uri, command_obj)
+            graph, definition = self._get_or_compile_graph(workflow_uri, command_obj)
             config = {"configurable": {"thread_id": instance_id}}
             
             if command_type == 'EVENT':
-                # Idempotency logic for EVENTs remains largely the same
                 checkpoint = self.state_saver.get(config)
                 if checkpoint is None:
                     adapter.info("No existing checkpoint found. Starting new workflow.")
@@ -104,7 +111,16 @@ class OrchestratorService:
                         "workflow_definition_uri": workflow_uri,
                     }
                     initial_state_patch = {"context": initial_context, "data": payload}
+
+                    # --- Publish Start Event ---
+                    entry_point_name = definition["entry_point"]
+                    entry_node_def = definition["nodes"][entry_point_name]
+                    next_step = {"name": entry_point_name, "title": entry_node_def.get("title", ""), "type": entry_node_def.get("type", "")}
+                    self.event_publisher.publish_start_event(initial_state_patch, [next_step])
+                    # ---
+
                     final_state = graph.invoke(initial_state_patch, config)
+                    adapter.info(f"Successfully ran workflow. Final state: {final_state}")
                     adapter.info(f"Successfully ran workflow. Final state: {final_state}")
                 else:
                     # Duplicate event handling logic remains the same
