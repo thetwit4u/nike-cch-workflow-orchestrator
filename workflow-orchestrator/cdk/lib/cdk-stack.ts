@@ -29,6 +29,7 @@ interface CchWorkflowOrchestratorStackProps extends StackProps {
 export class CchWorkflowOrchestratorStack extends Stack {
     constructor(scope: Construct, id: string, props?: CchWorkflowOrchestratorStackProps) {
         super(scope, id, props);
+        console.log("--- Starting CCH Workflow Orchestrator Stack Synthesis ---");
 
         // --- Context and Environment Variables ---
         const env = this.node.tryGetContext('env') || process.env.ENVIRONMENT || 'st';
@@ -59,6 +60,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
         const systemEventsTopicArn = process.env.SNS_TOPIC_CCH_EVENTS_ARN;
         let systemEventsTopic: sns.ITopic;
         let systemEventsTestListenerQueue: sqs.Queue | undefined;
+        console.log("--- Handling SNS System Events Topic ---");
 
         if (systemEventsTopicArn) {
             // If an ARN is provided via environment variables, import the existing topic.
@@ -86,6 +88,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
                 new cdk.CfnOutput(this, 'SystemEventsTestListenerQueueUrl', { value: systemEventsTestListenerQueue.queueUrl });
             }
         }
+        console.log("--- SNS Topic handling complete. ---");
 
         // Resolve VPC from vpcId
         const vpc = Vpc.fromLookup(this, 'Vpc', { vpcId: (process.env.VPC_ID || '') });
@@ -101,7 +104,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
         );
 
         const logGroup = new logs.LogGroup(this, 'LogGroup', {
-            logGroupName: `/opentelemetry/${platformType}-${dataClassification}/aws/lambda/${process.env.SERVICE_NAME || ''}`,
+            logGroupName: `/opentelemetry/${platformType}-${dataClassification}/aws/lambda/${process.env.SERVICE_NAME || ''}-${env}${ownerSuffix}`,
             removalPolicy: cdk.RemovalPolicy.DESTROY,
             retention: logs.RetentionDays.ONE_WEEK
         });
@@ -112,7 +115,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
                 iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
                 iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaVPCAccessExecutionRole')
             ],
-            roleName: `${mainPrefix}-${env}-${cdk.Aws.REGION}`
+            roleName: `${mainPrefix}-${cdk.Aws.REGION}-${env}`
         });
 
         // --- SQS Queues ---
@@ -154,7 +157,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
             autoDeleteObjects: true,
         });
 
-        const workFlowDefinitionsBucket = s3.Bucket.fromBucketArn(this, 'WorkflowDefinitionsBucketImport', `arn:aws:s3:::cch-flow-controller-definitions-${env}-${cdk.Aws.REGION}`);
+        const workFlowDefinitionsBucket = s3.Bucket.fromBucketArn(this, 'WorkflowDefinitionsBucketImport', `arn:aws:s3:::cch-flow-controller-definitions-${cdk.Aws.REGION}-${env}`);
 
         // --- EventBridge Scheduler ---
         const schedulerGroupName = `${mainPrefix}-schedules-${env}${ownerSuffix}`;
@@ -168,6 +171,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
 
         // --- Orchestrator Lambda Function (Conditional Build) ---
         const definitionsBucketName = (process.env.SERVICE_NAME && process.env.SERVICE_VERSION) ? workFlowDefinitionsBucket.bucketName : internalDefinitionsBucket.bucketName;
+        console.log("--- Defining Orchestrator Lambda Function ---");
 
         let commonLambdaEnv: { [key: string]: string } = {
             STATE_TABLE_NAME: stateTable.tableName,
@@ -181,7 +185,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
             LOG_LEVEL: 'INFO',
             ...capabilityEnvVars,
             VERSION: new Date().toISOString(),
-            OTEL_EXPORTER_OTLP_ENDPOINT: `https://trade-${process.env.ENVIRONMENT || 'st'}-otel-${cdk.Aws.REGION}.${process.env.HOSTED_ZONE_NAME || ''}:4318`,
+            OTEL_EXPORTER_OTLP_ENDPOINT: `https://trade-${process.env.ENVIRONMENT?.split('-')[0] || 'st'}-otel-${cdk.Aws.REGION}.${process.env.HOSTED_ZONE_NAME || ''}:4318`,
             OTEL_SERVICE_NAME: process.env.SERVICE_NAME || '',
             OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
             OTEL_LOGS_EXPORTER: 'otlp',
@@ -225,6 +229,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
                 },
             });
         }
+        console.log("--- Orchestrator Lambda Function defined. ---");
 
         // Grant permissions to send messages to capability queues
         for (const queueUrl of Object.values(capabilityEnvVars)) {

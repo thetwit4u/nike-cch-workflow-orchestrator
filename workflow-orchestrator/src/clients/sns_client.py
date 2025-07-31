@@ -29,7 +29,7 @@ class SnsClient:
             raise TypeError(f"message_body must be a dict or a str, not {type(message_body).__name__}")
 
         try:
-            logger.info(f"Publishing message to topic: {topic_arn}")
+            logger.info(f"Publishing message to topic: {topic_arn}\nMessage: {body_str}")
             self.client.publish(
                 TopicArn=topic_arn,
                 Message=body_str,

@@ -57,8 +57,18 @@ class EventPublishingCheckpointer(BaseCheckpointSaver):
             current_node_def = self.workflow_definition.get("nodes", {}).get(current_node_name, {})
             current_node_type = current_node_def.get("type")
             
-            # Only publish for terminal or async nodes from the checkpointer
+            # Only publish for specific node types from the checkpointer
             if current_node_type in ["async_request", "end"]:
+                status = ""
+                if current_node_type == "async_request":
+                    # Check if a response has been processed by looking for the status key
+                    if state.get("data", {}).get("status"):
+                        status = "Ended:AsyncRequest"
+                    else:
+                        status = "Started:AsyncRequest"
+                elif current_node_type == "end":
+                    status = "Ended"
+
                 next_nodes = checkpoint.get("next", ())
                 current_step_payload = {
                     "name": current_node_name,
@@ -75,8 +85,14 @@ class EventPublishingCheckpointer(BaseCheckpointSaver):
                         "type": next_node_def.get("type", ""),
                     })
                 
-                logger.info(f"Publishing event for completed node: {current_node_name} (Type: {current_node_type}) -> Next: {[n['name'] for n in next_steps_payload]}")
-                self.event_publisher.publish_event(state, current_step_payload, next_steps_payload)
+                # For async requests, the next node is often not in the checkpoint yet.
+                if current_node_type == "async_request" and not next_steps_payload:
+                    next_node_name = current_node_def.get("on_response")
+                    if next_node_name:
+                        next_steps_payload = self._find_next_significant_nodes(next_node_name)
+                
+                logger.info(f"Publishing event for node: {current_node_name} (Type: {current_node_type}, Status: {status}) -> Next: {[n['name'] for n in next_steps_payload]}")
+                self.event_publisher.publish_event(state, current_step_payload, next_steps_payload, status)
 
         except Exception as e:
             logger.error(f"Error publishing event after saving checkpoint: {e}", exc_info=True)
@@ -88,3 +104,39 @@ class EventPublishingCheckpointer(BaseCheckpointSaver):
 
     async def aput_writes(self, config: RunnableConfig, writes: List[Tuple[str, Any]], task_id: str) -> None:
         return await self.saver.aput_writes(config, writes, task_id)
+
+    def _find_next_significant_nodes(self, start_node_name: str) -> List[Dict[str, Any]]:
+        """
+        Traverses the workflow definition from a starting node to find the next
+        significant nodes (async_request or end).
+        """
+        significant_nodes = []
+        nodes_to_visit = [start_node_name]
+        visited_nodes = set()
+
+        while nodes_to_visit:
+            current_node_name = nodes_to_visit.pop(0)
+            if current_node_name in visited_nodes:
+                continue
+            visited_nodes.add(current_node_name)
+
+            node_def = self.workflow_definition.get("nodes", {}).get(current_node_name, {})
+            node_type = node_def.get("type")
+
+            if node_type in ["async_request", "end"]:
+                significant_nodes.append({
+                    "name": current_node_name,
+                    "title": node_def.get("title", ""),
+                    "type": node_type,
+                })
+            else:
+                # Follow the success path for other nodes
+                next_node = node_def.get("on_success") or node_def.get("on_response")
+                if next_node:
+                    nodes_to_visit.append(next_node)
+                # Handle conditional branches
+                elif node_type == "condition":
+                    for branch_node in node_def.get("branches", {}).values():
+                        nodes_to_visit.append(branch_node)
+
+        return significant_nodes

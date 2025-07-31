@@ -17,19 +17,19 @@ class EventPublisher:
         self.sns_client = SnsClient()
         self.topic_arn = os.getenv("SYSTEM_EVENTS_TOPIC_ARN")
 
-    def publish_event(self, state: dict, current_step: Dict[str, Any], next_steps: list[Dict[str, Any]]) -> None:
+    def publish_event(self, state: dict, current_step: Dict[str, Any], next_steps: list[Dict[str, Any]], status: str) -> None:
         """
         Constructs and publishes a CchSystemEvent for a completed workflow step.
         """
-        self._publish(state, current_step, next_steps)
+        self._publish(state, current_step, next_steps, status)
 
     def publish_start_event(self, initial_state: dict, next_steps: list[Dict[str, Any]]) -> None:
         """
         Constructs and publishes a CchSystemEvent for the start of a workflow.
         """
-        self._publish(initial_state, None, next_steps)
+        self._publish(initial_state, None, next_steps, "Started")
 
-    def _publish(self, state: dict, current_step: Optional[Dict[str, Any]], next_steps: List[Dict[str, Any]]) -> None:
+    def _publish(self, state: dict, current_step: Optional[Dict[str, Any]], next_steps: List[Dict[str, Any]], status: str) -> None:
         if not self.topic_arn:
             logger.warning("SYSTEM_EVENTS_TOPIC_ARN environment variable not set. Skipping event publication.")
             return
@@ -44,7 +44,7 @@ class EventPublisher:
             logger.warning(f"workflowInstanceId is missing from context. Cannot publish event.")
             return
 
-        event = self._build_event(state, current_step, next_steps)
+        event = self._build_event(state, current_step, next_steps, status)
 
         try:
             self.sns_client.publish_message(
@@ -55,14 +55,24 @@ class EventPublisher:
         except Exception as e:
             logger.error(f"Failed to publish event: {e}", exc_info=True)
 
-    def _build_event(self, state: WorkflowState, current_step: Dict[str, Any], next_steps: list[Dict[str, Any]]) -> Dict[str, Any]:
+    def _build_event(self, state: dict, current_step: Optional[Dict[str, Any]], next_steps: List[Dict[str, Any]], status: str) -> Dict[str, Any]:
         """
         Builds the CchSystemEvent object.
         """
         context = state.get("context", {})
+        event_type = "WorkflowStateUpdated"
+        if status == "Started":
+            event_type = "WorkflowStateInitiated"
+        elif status == "Ended":
+            event_type = "WorkflowStateEnded"
+        elif status == "Started:AsyncRequest":
+            event_type = "AsyncRequestStarted"
+        elif status == "Ended:AsyncRequest":
+            event_type = "AsyncRequestEnded"
+
         return {
             "eventId": str(uuid.uuid4()),
-            "eventType": "WorkflowStateChange",
+            "eventType": event_type,
             "eventTimestamp": datetime.now(timezone.utc).isoformat(),
             "source": "WorkflowOrchestrator",
             "correlationId": context.get("correlationId"),
