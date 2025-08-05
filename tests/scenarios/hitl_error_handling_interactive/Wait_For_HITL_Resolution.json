@@ -8,6 +8,9 @@
         "source": "InteractiveTestScript",
         "timestamp": "PLACEHOLDER_TIMESTAMP",
         "status": "SUCCESS",
-        "payload": {}
+        "payload": 
+            {
+                "messages": []
+            }
     }
 }
