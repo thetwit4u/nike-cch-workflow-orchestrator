@@ -4,16 +4,16 @@
     "data": {
         "messages": [
             {
-                "messageId": "error-hitl-trigger-001",
+                "messageId": "error-exception-trigger-001",
                 "timestamp": "2025-07-21T20:48:00Z",
                 "level": "ERROR",
-                "code": "HITL_TRIGGER",
-                "summary": "Forced HITL error triggered by billOfLadingNbr HITL-TRIGGER",
+                "code": "exception_TRIGGER",
+                "summary": "Forced exception error triggered by billOfLadingNbr exception-TRIGGER",
                 "context": {
                     "consignmentId": "PLACEHOLDER_CONSIGNMENT_ID",
-                    "billOfLadingNbr": "HITL-TRIGGER",
+                    "billOfLadingNbr": "exception-TRIGGER",
                     "consignmentImpExtId": "PLACEHOLDER_CONSIGNMENT_EXT_ID",
-                    "errorType": "hitl_simulation"
+                    "errorType": "exception_simulation"
                 }
             }
         ]

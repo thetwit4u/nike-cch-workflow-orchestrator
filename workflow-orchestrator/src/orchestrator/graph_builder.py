@@ -23,9 +23,10 @@ class GraphBuilder:
     Compiles a workflow definition from a dictionary into an executable LangGraph object.
     """
 
-    def __init__(self, definition: Dict[str, Any], checkpointer: BaseCheckpointSaver):
+    def __init__(self, definition: Dict[str, Any], checkpointer: BaseCheckpointSaver, event_publisher: Any):
         self.definition = definition
         self.checkpointer = checkpointer
+        self.event_publisher = event_publisher
         self.workflow = StateGraph(WorkflowState)
 
     def compile_graph(self):
@@ -295,7 +296,7 @@ class GraphBuilder:
         elif node_type == 'event_wait':
              return partial(core_nodes.handle_event_wait, node_config=node_data, node_name=node_name)
         elif node_type == "async_request":
-            return partial(capability_nodes.handle_async_request, node_config=node_data, node_name=node_name)
+            return partial(capability_nodes.handle_async_request, node_config=node_data, node_name=node_name, event_publisher=self.event_publisher)
         elif node_type == "sync_call":
             return partial(capability_nodes.handle_sync_call, node_config=node_data, node_name=node_name)
         elif node_type == "scheduled_request":
@@ -312,4 +313,4 @@ class GraphBuilder:
         else:
             def unhandled_node_action(state):
                 raise NotImplementedError(f"Node type '{node_type}' is not yet implemented.")
-            return unhandled_node_action 
+            return unhandled_node_action

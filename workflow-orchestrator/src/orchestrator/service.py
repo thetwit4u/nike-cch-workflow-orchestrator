@@ -72,7 +72,7 @@ class OrchestratorService:
             workflow_definition=definition
         )
 
-        builder = GraphBuilder(definition, checkpointer_with_events)
+        builder = GraphBuilder(definition, checkpointer_with_events, self.event_publisher)
         graph = builder.compile_graph()
         self.graph_cache[workflow_uri] = (graph, definition) # Cache both
         return graph, definition
@@ -154,6 +154,28 @@ class OrchestratorService:
                     
                 adapter.info(f"Transitioning to '{transition_node}'.")
                     
+                # --- Publish AsyncRequestEnded Event ---
+                if command_type == 'ASYNC_RESP':
+                    current_step_payload = {
+                        "name": interrupted_node,
+                        "title": node_def.get("title", ""),
+                        "type": node_def.get("type", ""),
+                    }
+                    next_steps_payload = self._find_next_significant_nodes(transition_node, definition)
+                    
+                    # Create a temporary state for the event publisher
+                    event_state = current_state.values.copy()
+                    event_state['data'] = payload.copy()
+                    event_state['data']['status'] = command_status
+
+                    self.event_publisher.publish_event(
+                        state=event_state,
+                        current_step=current_step_payload,
+                        next_steps=next_steps_payload,
+                        status="Ended:AsyncRequest"
+                    )
+                # ---
+
                 # Merge the command's status and payload into the state's data channel
                 # This makes the status available for condition nodes
                 update_data = payload.copy()
@@ -161,6 +183,10 @@ class OrchestratorService:
                 
                 graph.update_state(config, {"data": update_data}, as_node=transition_node)
                 final_state = graph.invoke(None, config)
+
+                # Clean up the status from the state after processing
+                graph.update_state(config, {"data": {"status": None}})
+
                 adapter.info(f"Successfully resumed and ran workflow to completion. Final state: {final_state}")
 
             else:
@@ -181,3 +207,39 @@ class OrchestratorService:
                 if key.startswith("branch:to:"):
                     return key.replace("branch:to:", "")
         return None
+
+    def _find_next_significant_nodes(self, start_node_name: str, workflow_definition: Dict[str, Any]) -> list[Dict[str, Any]]:
+        """
+        Traverses the workflow definition from a starting node to find the next
+        significant nodes (async_request or end).
+        """
+        significant_nodes = []
+        nodes_to_visit = [start_node_name]
+        visited_nodes = set()
+
+        while nodes_to_visit:
+            current_node_name = nodes_to_visit.pop(0)
+            if current_node_name in visited_nodes:
+                continue
+            visited_nodes.add(current_node_name)
+
+            node_def = workflow_definition.get("nodes", {}).get(current_node_name, {})
+            node_type = node_def.get("type")
+
+            if node_type in ["async_request", "end"]:
+                significant_nodes.append({
+                    "name": current_node_name,
+                    "title": node_def.get("title", ""),
+                    "type": node_type,
+                })
+            else:
+                # Follow the success path for other nodes
+                next_node = node_def.get("on_success") or node_def.get("on_response")
+                if next_node:
+                    nodes_to_visit.append(next_node)
+                # Handle conditional branches
+                elif node_type == "condition":
+                    for branch_node in node_def.get("branches", {}).values():
+                        nodes_to_visit.append(branch_node)
+
+        return significant_nodes
