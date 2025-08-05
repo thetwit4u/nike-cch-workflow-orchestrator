@@ -13,11 +13,11 @@ AUTHORIZED_COMMAND_QUEUE_SENDERS=arn:aws:iam::679172460410:role/FlowControllerIn
 # Capability Queue URLs for Workflow Orchestrator
 # These are automatically passed to the Lambda function environment
 # AWS Lambda functions associated with these queues are automatically granted SendMessage permissions to the command queue
-CCH_CAPABILITY_IMPORT=https://sqs.us-east-1.amazonaws.com/679172460410/cch-enrichment
+CCH_CAPABILITY_IMPORT=https://sqs.us-east-1.amazonaws.com/679172460410/cch-enrichment-st
 
 
 # If not set, the fallback sns topic with SQS queue is created automatically.
-SNS_TOPIC_CCH_EVENTS_ARN=""
+SNS_TOPIC_CCH_EVENTS_ARN="arn:aws:sns:us-east-1:679172460410:cch-system-events-fallback-st.fifo"
 
 # Add more capability queue URLs as needed
 # CCH_CAPABILITY_<CAPABILITY_NAME>=<SQS_QUEUE_URL>
