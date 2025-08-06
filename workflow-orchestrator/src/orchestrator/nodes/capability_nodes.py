@@ -17,6 +17,7 @@ import dateutil.parser
 
 from langgraph.types import Interrupt, interrupt
 
+from orchestrator.event_publisher import EventPublisher
 from orchestrator.state import WorkflowState
 from .library_nodes import _get_required_param
 
@@ -77,7 +78,7 @@ def handle_sync_call(state: WorkflowState, node_config: dict, node_name: str) ->
     return state
 
 
-def handle_async_request(state: WorkflowState, node_config: dict, node_name: str):
+def handle_async_request(state: WorkflowState, node_config: dict, node_name: str, event_publisher: EventPublisher):
     """
     Handles 'async_request' nodes by sending a command to a capability queue and then pausing.
     """
@@ -86,6 +87,27 @@ def handle_async_request(state: WorkflowState, node_config: dict, node_name: str
         
         capability_id = _get_required_param(node_config, "capability_id")
         
+        # --- Publish AsyncRequestStarted Event ---
+        current_step_payload = {
+            "name": node_name,
+            "title": node_config.get("title", ""),
+            "type": node_config.get("type", ""),
+        }
+        # In this context, the next step is always the on_response node
+        next_node_name = node_config.get("on_response")
+        next_steps_payload = []
+        if next_node_name:
+            # We don't have access to the full workflow definition here, so we create a partial payload
+            next_steps_payload.append({"name": next_node_name, "title": "", "type": ""})
+
+        event_publisher.publish_event(
+            state=state,
+            current_step=current_step_payload,
+            next_steps=next_steps_payload,
+            status="Started:AsyncRequest"
+        )
+        # ---
+
         # The parser needs the full state to access both 'data' and 'context'
         parser = CommandParser(state, node_config)
         # The create_command_message function already creates the full message envelope
