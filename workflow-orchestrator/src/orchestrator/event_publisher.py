@@ -27,7 +27,8 @@ class EventPublisher:
         """
         Constructs and publishes a CchSystemEvent for the start of a workflow.
         """
-        self._publish(initial_state, None, next_steps, "Started")
+        current_step = {"name": "WorkflowStart", "title": "Workflow Started", "type": "start"}
+        self._publish(initial_state, current_step, next_steps, "Started")
 
     def _publish(self, state: dict, current_step: Optional[Dict[str, Any]], next_steps: List[Dict[str, Any]], status: str) -> None:
         if not self.topic_arn:
@@ -70,13 +71,16 @@ class EventPublisher:
         elif status == "Ended:AsyncRequest":
             event_type = "AsyncRequestEnded"
 
+        business_context = {k: v for k, v in state.get("data", {}).items() if not k.startswith('_')}
+        messages = business_context.pop("messages", [])
+
         return {
             "eventId": str(uuid.uuid4()),
             "eventType": event_type,
             "eventTimestamp": datetime.now(timezone.utc).isoformat(),
             "source": "WorkflowOrchestrator",
             "correlationId": context.get("correlationId"),
-            "businessContext": {k: v for k, v in state.get("data", {}).items() if not k.startswith('_')},
+            "businessContext": business_context,
             "workflowContext": {
                 "workflowInstanceId": context.get("workflowInstanceId"),
                 "workflowDefinitionURI": context.get("workflow_definition_uri")
@@ -85,5 +89,5 @@ class EventPublisher:
                 "currentStep": current_step,
                 "nextSteps": next_steps
             },
-            "messages": state.get("messages", [])
+            "messages": messages
         }
