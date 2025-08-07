@@ -77,6 +77,24 @@ class OrchestratorService:
         self.graph_cache[workflow_uri] = (graph, definition) # Cache both
         return graph, definition
 
+
+    @staticmethod
+    def _deep_merge_dict(left: dict, right: dict) -> dict:
+        """
+        A reducer that deeply merges two dictionaries.
+        Nested dictionaries are merged recursively.
+        """
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            return right
+        
+        merged = left.copy()
+        for key, value in right.items():
+            if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+                merged[key] = _deep_merge_dict(merged[key], value)
+            else:
+                merged[key] = value
+        return merged
+
     def process_command(self, command_message: dict):
         instance_id = command_message.get('workflowInstanceId')
         adapter = WorkflowIdAdapter(logger, {'workflow_id': instance_id})
@@ -154,7 +172,8 @@ class OrchestratorService:
                     
                 adapter.info(f"Transitioning to '{transition_node}'.")
                     
-                # --- Publish AsyncRequestEnded Event ---
+
+
                 if command_type == 'ASYNC_RESP':
                     current_step_payload = {
                         "name": interrupted_node,
@@ -162,10 +181,9 @@ class OrchestratorService:
                         "type": node_def.get("type", ""),
                     }
                     next_steps_payload = self._find_next_significant_nodes(transition_node, definition)
-                    
                     # Create a temporary state for the event publisher
                     event_state = current_state.values.copy()
-                    event_state['data'] = payload.copy()
+                    event_state['data'] = self._deep_merge_dict(event_state.get('data', {}), payload)
                     event_state['data']['status'] = command_status
 
                     self.event_publisher.publish_event(
@@ -174,7 +192,8 @@ class OrchestratorService:
                         next_steps=next_steps_payload,
                         status="Ended:AsyncRequest"
                     )
-                # ---
+                # --- ---
+
 
                 # Merge the command's status and payload into the state's data channel
                 # This makes the status available for condition nodes
@@ -183,6 +202,10 @@ class OrchestratorService:
                 graph.update_state(config, {"data": update_data}, as_node=transition_node)
                 final_state = graph.invoke(None, config)
                 adapter.info(f"Successfully resumed and ran workflow to completion. Final state: {final_state}")
+
+               # --- Publish AsyncRequestEnded Event ---
+
+
 
             else:
                 adapter.warning(f"Unknown command type '{command_type}' cannot be processed.")
