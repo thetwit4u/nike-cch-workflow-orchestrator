@@ -1,0 +1,12 @@
+{
+    "command": "capability_response",
+    "status": "SUCCESS",
+    "data": {
+        "importFilingPacks": [
+            {
+                "filingPackId": "fpk-12345-001",
+                "filingPackURI": "s3://cch-filingpacks/filing-pack-1.json"
+            }
+        ]
+    }
+}

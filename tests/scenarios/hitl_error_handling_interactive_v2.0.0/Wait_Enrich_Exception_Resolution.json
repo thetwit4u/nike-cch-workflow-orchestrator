@@ -1,0 +1,17 @@
+
+{
+    "workflowInstanceId": "PLACEHOLDER_WORKFLOW_INSTANCE_ID",
+    "correlationId": "PLACEHOLDER_CORRELATION_ID",
+    "workflowDefinitionURI": "PLACEHOLDER_WORKFLOW_DEFINITION_URI",
+    "command": {
+        "type": "EVENT_WAIT_RESP",
+        "id": "PLACEHOLDER_COMMAND_ID",
+        "source": "InteractiveTestScript",
+        "timestamp": "PLACEHOLDER_TIMESTAMP",
+        "status": "SUCCESS",
+        "payload": 
+            {
+                "messages": []
+            }
+    }
+}
