@@ -57,16 +57,12 @@ export class CchWorkflowOrchestratorStack extends Stack {
 
         // --- SNS System Events Topic (Conditional) ---
         const systemEventsTopicArn = process.env.SNS_TOPIC_CCH_EVENTS_ARN;
+
         let systemEventsTopic: sns.ITopic;
         let systemEventsTestListenerQueue: sqs.Queue | undefined;
 
-        if (systemEventsTopicArn) {
-            // If an ARN is provided via environment variables, import the existing topic.
-            // This allows for a centrally managed topic in the future.
-            systemEventsTopic = sns.Topic.fromTopicArn(this, 'ImportedSystemEventsTopic', systemEventsTopicArn);
-        } else {
-            // If no ARN is provided, create a fallback topic.
-            // This is useful for isolated/dev environments.
+        if (isTestEnv) {
+            // If it's a test environment, create a fallback topic and a listener queue.
             const fallbackTopic = new sns.Topic(this, 'FallbackSystemEventsTopic', {
                 topicName: `cch-system-events-fallback-${env}${ownerSuffix}.fifo`,
                 fifo: true,
@@ -74,17 +70,20 @@ export class CchWorkflowOrchestratorStack extends Stack {
             });
             systemEventsTopic = fallbackTopic;
 
-            // If it's a test environment, create a listener queue and subscribe it to the fallback topic.
-            if (isTestEnv) {
-                systemEventsTestListenerQueue = new sqs.Queue(this, 'SystemEventsTestListenerQueue', {
-                    queueName: `${mainPrefix}-system-events-listener-queue-${env}${ownerSuffix}.fifo`,
-                    fifo: true,
-                    visibilityTimeout: Duration.seconds(300),
-                });
-                fallbackTopic.addSubscription(new subs.SqsSubscription(systemEventsTestListenerQueue, { rawMessageDelivery: true }));
+            systemEventsTestListenerQueue = new sqs.Queue(this, 'SystemEventsTestListenerQueue', {
+                queueName: `${mainPrefix}-system-events-listener-queue-${env}${ownerSuffix}.fifo`,
+                fifo: true,
+                visibilityTimeout: Duration.seconds(300),
+            });
+            fallbackTopic.addSubscription(new subs.SqsSubscription(systemEventsTestListenerQueue, { rawMessageDelivery: true }));
 
-                new cdk.CfnOutput(this, 'SystemEventsTestListenerQueueUrl', { value: systemEventsTestListenerQueue.queueUrl });
+            new cdk.CfnOutput(this, 'SystemEventsTestListenerQueueUrl', { value: systemEventsTestListenerQueue.queueUrl });
+        } else {
+            // In non-test environments, we expect the topic ARN to be provided.
+            if (!systemEventsTopicArn) {
+                throw new Error('SNS_TOPIC_CCH_EVENTS_ARN must be provided in non-test environments.');
             }
+            systemEventsTopic = sns.Topic.fromTopicArn(this, 'ImportedSystemEventsTopic', systemEventsTopicArn);
         }
 
         // Resolve VPC from vpcId

@@ -166,7 +166,7 @@
         "event_key": { "type": "string", "description": "The key the orchestrator will wait for to appear in the context." },
         "on_event": { "type": "string", "description": "The node to transition to once the event key is received." }
       },
-      "required": ["event_key", "on_event"]
+      "required": []
     },
     "endBranchNode": { "type": "object", "properties": { "type": { "const": "end_branch" } } },
     "endNode": { "type": "object", "properties": { "type": { "const": "end" } } },

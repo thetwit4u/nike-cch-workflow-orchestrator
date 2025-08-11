@@ -23,9 +23,10 @@ class GraphBuilder:
     Compiles a workflow definition from a dictionary into an executable LangGraph object.
     """
 
-    def __init__(self, definition: Dict[str, Any], checkpointer: BaseCheckpointSaver):
+    def __init__(self, definition: Dict[str, Any], checkpointer: BaseCheckpointSaver, event_publisher: Any):
         self.definition = definition
         self.checkpointer = checkpointer
+        self.event_publisher = event_publisher
         self.workflow = StateGraph(WorkflowState)
 
     def compile_graph(self):
@@ -56,10 +57,37 @@ class GraphBuilder:
 
     def _add_edges(self):
         """Adds edges to the graph based on the workflow definition."""
+        
+        nodes_with_failure_path = {}
+        nodes_without_failure_path = {}
+
         for node_name, node_config in self.definition["nodes"].items():
-            # The 'on_failure' edge is now handled globally for all node types that support it.
-            # This simplifies the logic and ensures consistent error handling.
             if "on_failure" in node_config:
+                nodes_with_failure_path[node_name] = node_config
+            else:
+                nodes_without_failure_path[node_name] = node_config
+        
+        # Process nodes without on_failure first, as this was causing issues with condition nodes
+        for node_name, node_config in nodes_without_failure_path.items():
+            node_type = node_config.get("type")
+            if node_type == "condition":
+                    self._add_conditional_edge(node_name, node_config)
+            elif node_type == "map_fork":
+                    self._add_map_fork_edge(node_name, node_config)
+            elif node_type == "event_wait":
+                self._add_event_wait_edge(node_name, node_config)
+            else:
+                success_path = self._get_success_path(node_config)
+                if success_path:
+                    self.workflow.add_edge(node_name, success_path)
+
+        # Now process nodes with on_failure
+        for node_name, node_config in nodes_with_failure_path.items():
+            node_type = node_config.get("type")
+            if node_type == "condition":
+                # Condition nodes have their own failure handling within _add_conditional_edge
+                self._add_conditional_edge(node_name, node_config)
+            else:
                 self.workflow.add_conditional_edges(
                     node_name,
                     lambda state: "on_failure" if state.get("is_error") else "on_success",
@@ -68,22 +96,6 @@ class GraphBuilder:
                         "on_success": self._get_success_path(node_config) or END
                     }
                 )
-            # For nodes without a dedicated failure path, we use standard edges.
-            else:
-                node_type = node_config.get("type")
-                if node_type == "condition":
-                        # Conditional nodes resolve their own branches; no standard edge needed here.
-                        self._add_conditional_edge(node_name, node_config)
-                elif node_type == "map_fork":
-                        # Map_fork has its own resolver for parallel execution.
-                        self._add_map_fork_edge(node_name, node_config)
-                elif node_type == "event_wait":
-                    self._add_event_wait_edge(node_name, node_config)
-                else:
-                    # For all other nodes, add a direct edge to their success path.
-                    success_path = self._get_success_path(node_config)
-                    if success_path:
-                        self.workflow.add_edge(node_name, success_path)
                 
     def _get_success_path(self, node_config: dict) -> str | None:
         """Helper to get the primary success transition for a node."""
@@ -295,7 +307,7 @@ class GraphBuilder:
         elif node_type == 'event_wait':
              return partial(core_nodes.handle_event_wait, node_config=node_data, node_name=node_name)
         elif node_type == "async_request":
-            return partial(capability_nodes.handle_async_request, node_config=node_data, node_name=node_name)
+            return partial(capability_nodes.handle_async_request, node_config=node_data, node_name=node_name, event_publisher=self.event_publisher, workflow_definition=self.definition)
         elif node_type == "sync_call":
             return partial(capability_nodes.handle_sync_call, node_config=node_data, node_name=node_name)
         elif node_type == "scheduled_request":

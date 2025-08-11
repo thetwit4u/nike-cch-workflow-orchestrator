@@ -4,7 +4,7 @@
   "description": "Command for Workflow Orchestrator; The standard payload sent to the Workflow Orchestrator to initiate or advance a workflow.",
   "version": "3.3.0",
   "$defs": {
-    "CchMessage": {
+    "CCHMessage": {
       "title": "CCH Message",
       "description": "A standardized message object for reporting errors, warnings, or info.",
       "type": "object",
@@ -62,7 +62,8 @@
       "type": "string"
     },
     "correlationId": {
-      "type": "string"
+      "type": "string",
+      "description": "Business key used for identification. Example: Bill of Lading (BOL) number, Container / Bill of Ladiing combination, Trailer Reference Id, ..."
     },
     "workflowDefinitionURI": {
       "type": "string",
@@ -165,7 +166,7 @@
                 "type": "array",
                 "description": "A required list of messages when the status is ERROR.",
                 "items": {
-                  "$ref": "#/$defs/CchMessage"
+                  "$ref": "#/$defs/CCHMessage"
                 }
               }
             },

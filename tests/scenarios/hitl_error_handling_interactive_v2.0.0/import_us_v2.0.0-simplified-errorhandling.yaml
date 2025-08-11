@@ -1,0 +1,78 @@
+# yaml-language-server: $schema=../../../workflow-orchestrator/src/schemas/json-schema/workflow/workflow-definition.schema.json
+schema_version: "1.1.0"
+workflow_name: "Simplified Import US Workflow v2.0.0"
+workflow_id: "import_us_v1_simplified_v2.0.0"
+entry_point: Enrich_Consignment
+
+initial_context:
+  - consignmentId
+  - consignmentURI
+
+nodes:
+  Enrich_Consignment:
+    type: async_request
+    title: Enrich Consignment
+    capability_id: import#enrich_consignment
+    input_keys:
+      - consignmentId
+      - consignmentURI
+    request_output_keys:
+      - consignmentImportEnrichedId
+      - consignmentImportEnrichedURI
+    on_response: Check_Enrichment_Response_Status
+    on_failure: Handle_Error
+
+  Check_Enrichment_Response_Status:
+    type: condition
+    title: Check Enrichment Response Status
+    condition_on_key: status
+    branches:
+      SUCCESS: Create_Filing_Packs
+      ERROR: Wait_Enrich_Exception_Resolution
+    on_failure: Handle_Error
+
+
+  Create_Filing_Packs:
+    type: async_request
+    title: Create Filing Packs
+    capability_id: import#create_filingpacks
+    input_keys:
+      - consignmentImportEnrichedId
+      - consignmentImportEnrichedURI
+    request_output_keys:
+      - importFilingPacks
+    on_response: Check_Filing_Packs_Response_Status
+    on_failure: End_Workflow
+
+  Check_Filing_Packs_Response_Status:
+    type: condition
+    title: Check Filing Packs Response Status
+    condition_on_key: "status"
+    branches:
+      "SUCCESS": End_Workflow
+      "ERROR": Wait_Create_FilingPack_Resolution
+    on_failure: Handle_Error
+
+  Wait_Enrich_Exception_Resolution:
+    type: event_wait
+    title: Wait for Enrich Exception Resolution
+    on_success: Enrich_Consignment # Retry the node
+    on_failure: Handle_Error
+
+  Wait_Create_FilingPack_Resolution:
+    type: event_wait
+    title: Wait for Create FilingPack Resolution
+    on_success: Create_Filing_Packs # Retry the node
+    on_failure: Handle_Error
+
+  Handle_Error:
+    type: log_error
+    title: "Generic Error Handler"
+    default_error_code: "GEN-001"
+    message_from_context_key: "_internalError"
+    default_message: "A general error occurred in the workflow."
+    on_success: End_Workflow   
+
+  End_Workflow:
+    type: end
+    title: End Workflow
