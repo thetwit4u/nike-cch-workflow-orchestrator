@@ -40,9 +40,10 @@ class EventPublisher:
             logger.warning(f"Context is not a valid dictionary in state. Cannot publish event.")
             return
 
-        message_group_id = context.get("workflowInstanceId")
+        data = state.get("data", {})
+        message_group_id = data.get("consignmentId")
         if not message_group_id:
-            logger.warning(f"workflowInstanceId is missing from context. Cannot publish event.")
+            logger.warning(f"consignmentIdis missing from context. Cannot publish event.")
             return
 
         event = self._build_event(state, current_step, next_steps, status)
@@ -83,7 +84,8 @@ class EventPublisher:
             "businessContext": business_context,
             "workflowContext": {
                 "workflowInstanceId": context.get("workflowInstanceId"),
-                "workflowDefinitionURI": context.get("workflow_definition_uri")
+                "workflowDefinitionURI": context.get("workflow_definition_uri"),
+                "consignmentId": state.get("data", {}).get("consignmentId")
             },
             "transition": {
                 "currentStep": current_step,

@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "CHHSystemEvent",
+  "title": "CCHSystemEvent",
   "description": "A standardized event published by any CCH component to report a significant state change or business moment.",
   "type": "object",
   "$defs": {
@@ -82,16 +82,17 @@
       "properties": {
         "workflowInstanceId": { "type": "string", "format": "uuid" },
         "workflowName": { "type": "string" },
-        "workflowDefinitionURI": { "type": "string", "format": "uri" }
+        "workflowDefinitionURI": { "type": "string", "format": "uri" },
+        "consignmentId": { "type": "string", "description": "The consignment ID associated with this workflow." } 
       },
-      "required": ["workflowInstanceId", "workflowDefinitionURI"]
+      "required": ["workflowInstanceId", "workflowName", "workflowDefinitionURI"]
     },
     "controllerContext": {
         "$ref": "#/$defs/ControllerContext"
     },
     "transition": {
       "type": "object",
-      "description": "OPTIONAL: Describes a workflow step transition. MUST be included if source is 'WorkflowOrchestrator'.",
+      "description": "Describes a workflow step transition.",
       "properties": {
         "currentStep": {
           "description": "The node that has just completed execution to produce this event. Null for the initial start of the workflow.",
@@ -103,7 +104,7 @@
           "items": { "$ref": "#/$defs/WorkflowStep" }
         }
       },
-      "required": ["currentStep", "nextSteps"]
+      "required": ["currentStep"]
     },
     "messages": {
       "type": "array",
@@ -111,7 +112,7 @@
       "items": { "$ref": "#/$defs/CCHMessage" }
     }
   },
-  "required": ["eventId", "eventType", "eventTimestamp", "source", "correlationId", "businessContext"],
+  "required": ["eventId", "eventType", "eventTimestamp", "source", "correlationId"],
   "allOf": [
     {
       "if": { "properties": { "source": { "const": "WorkflowOrchestrator" } } },
@@ -119,7 +120,7 @@
     },
     {
       "if": { "properties": { "source": { "const": "TradeFlowController" } } },
-      "then": { "required": ["controllerContext"] }
+      "then": { "required": ["controllerContext", "transition"] }
     }
   ]
 }
