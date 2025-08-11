@@ -157,6 +157,10 @@ class InteractiveTestRunner:
             f"data/consignment-{correlation_id}.json"
         )
 
+        with open(self.scenario_path / 'consignment.json', 'r') as f:
+            consignment_data = json.load(f)
+            consignment_id = consignment_data.get('consignment', {}).get('consignmentId')
+
         # 2. Send the start_workflow command with the correct nested structure
         command_message = {
             "workflowInstanceId": correlation_id,
@@ -168,6 +172,7 @@ class InteractiveTestRunner:
                 "source": "Interactive-HITLErrorHandling",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "payload": {
+                    "consignmentId": consignment_id,
                     "consignmentURI": consignment_uri,
                     "_no_cache": True
                 }
