@@ -183,8 +183,23 @@ class OrchestratorService:
 
                 # Universal logic for resuming from a pause
                 adapter.info(f"Processing {command_type} for thread '{config['configurable']['thread_id']}'.")
-                    
+                
                 current_state = graph.get_state(config)
+
+                # Idempotency for ASYNC_RESP: ignore if not paused or already processed
+                if command_type == 'ASYNC_RESP':
+                    # If the graph is not currently paused on this thread, ignore late/duplicate responses
+                    if not current_state.next:
+                        adapter.info("Not paused on this thread; ignoring ASYNC_RESP as idempotent.")
+                        return
+                    dedupe_key = command_obj.get('in_reply_to') or command_obj.get('id')
+                    processed = current_state.values.get('context', {}).get('processed_async_replies', {}) or {}
+                    if processed.get(dedupe_key):
+                        adapter.info(f"ASYNC_RESP with key '{dedupe_key}' already processed; ignoring.")
+                        return
+                    # Mark as processed immediately to protect from rapid duplicates
+                    graph.update_state(config, {"context": {"processed_async_replies": {dedupe_key: True}}})
+
                 interrupted_node = self._get_interrupted_node(current_state)
 
                 if not interrupted_node:
@@ -238,13 +253,15 @@ class OrchestratorService:
                 final_state = graph.invoke(None, config)
                 adapter.info(f"Successfully resumed and ran workflow to completion. Final state: {final_state}")
 
-                # If we are transitioning into a map_fork, drain-run to let all branches send their async requests.
+                # If we are transitioning into a map_fork, attempt a drain-run ONLY if not currently interrupted.
                 transitioned_node_def = definition.get("nodes", {}).get(transition_node, {})
                 if transitioned_node_def.get("type") == "map_fork":
-                    try:
-                        self._drain_parallel_fanout(graph, config, adapter)
-                    except Exception as drain_err:
-                        adapter.warning(f"Drain-run after map_fork transition encountered an issue: {drain_err}")
+                    current_state_after = graph.get_state(config)
+                    if not current_state_after.next:
+                        try:
+                            self._drain_parallel_fanout(graph, config, adapter)
+                        except Exception as drain_err:
+                            adapter.warning(f"Drain-run after map_fork transition encountered an issue: {drain_err}")
 
                # --- Publish AsyncRequestEnded Event ---
 
