@@ -313,7 +313,14 @@ class GraphBuilder:
         elif node_type == 'event_wait':
              return partial(core_nodes.handle_event_wait, node_config=node_data, node_name=node_name)
         elif node_type == "async_request":
-            return partial(capability_nodes.handle_async_request, node_config=node_data, node_name=node_name, event_publisher=self.event_publisher, workflow_definition=self.definition)
+            return partial(
+                capability_nodes.handle_async_request,
+                node_config=node_data,
+                node_name=node_name,
+                event_publisher=self.event_publisher,
+                workflow_definition=self.definition,
+                checkpointer=self.checkpointer,
+            )
         elif node_type == "sync_call":
             return partial(capability_nodes.handle_sync_call, node_config=node_data, node_name=node_name)
         elif node_type == "scheduled_request":

@@ -256,12 +256,10 @@ class OrchestratorService:
                 # If we are transitioning into a map_fork, attempt a drain-run ONLY if not currently interrupted.
                 transitioned_node_def = definition.get("nodes", {}).get(transition_node, {})
                 if transitioned_node_def.get("type") == "map_fork":
-                    current_state_after = graph.get_state(config)
-                    if not current_state_after.next:
-                        try:
-                            self._drain_parallel_fanout(graph, config, adapter)
-                        except Exception as drain_err:
-                            adapter.warning(f"Drain-run after map_fork transition encountered an issue: {drain_err}")
+                    try:
+                        self._drain_parallel_fanout(graph, config, adapter, definition, transition_node)
+                    except Exception as drain_err:
+                        adapter.warning(f"Drain-run after map_fork transition encountered an issue: {drain_err}")
 
                # --- Publish AsyncRequestEnded Event ---
 
@@ -273,44 +271,68 @@ class OrchestratorService:
         except Exception as e:
             adapter.error(f"Error processing command for workflow '{instance_id}': {e}", exc_info=True)
 
-    def _drain_parallel_fanout(self, graph, config: dict, adapter: logging.LoggerAdapter):
+    def _drain_parallel_fanout(self, graph, config: dict, adapter: logging.LoggerAdapter, definition: Dict[str, Any], map_fork_node_name: str):
         """
-        Continue invoking the graph to allow all map_fork branches to start and
-        dispatch their async requests. We loop until the number of registered
-        branch checkpoints stabilizes for a couple of iterations or a max
-        iteration threshold is reached.
+        Dispatch async requests for each map_fork branch explicitly to avoid
+        losing parallelism when running under a single-threaded Lambda invoke.
+        Uses the workflow definition to build messages identical to the
+        branch entry node (async_request) and marks branches as processed to
+        ensure idempotency.
         """
-        max_iterations = 50
-        stable_rounds_required = 2
-        stable_rounds = 0
-        previous_count = -1
+        state_values = graph.get_state(config).values
+        data = state_values.get("data", {})
+        context = state_values.get("context", {})
 
-        def count_registered_branches() -> int:
-            checkpoint = self.state_saver.get(config)
-            if not checkpoint:
-                return 0
-            channel_values = checkpoint.get("channel_values", {})
-            return sum(1 for key in channel_values.keys() if key.startswith("branch_checkpoints."))
+        fork_def = definition.get("nodes", {}).get(map_fork_node_name, {})
+        input_list_key = fork_def.get("input_list_key")
+        branch_key_prop = fork_def.get("branch_key")
+        entry_node_name = fork_def.get("branch_entry_node")
+        entry_node_def = definition.get("nodes", {}).get(entry_node_name, {})
 
-        for i in range(max_iterations):
-            before = count_registered_branches()
-            adapter.info(f"Drain-run iteration {i+1}: registered branches before step = {before}")
+        if not all([input_list_key, branch_key_prop, entry_node_name, entry_node_def]):
+            adapter.error("map_fork configuration incomplete; cannot drain-run fanout.")
+            return
 
-            # Advance execution; this lets LangGraph run pending Send tasks/branches
-            graph.invoke(None, config)
+        items = data.get(input_list_key) or []
+        if not isinstance(items, list):
+            adapter.error(f"map_fork input_list_key '{input_list_key}' is not a list; aborting drain-run.")
+            return
 
-            after = count_registered_branches()
-            adapter.info(f"Drain-run iteration {i+1}: registered branches after step = {after}")
+        processed_key = f"processed_branch_requests.{map_fork_node_name}"
+        processed = (context.get("processed_branch_requests", {}).get(map_fork_node_name)) or {}
 
-            if after == previous_count:
-                stable_rounds += 1
-            else:
-                stable_rounds = 0
-            previous_count = after
+        from utils.command_parser import CommandParser
+        from clients.queue_client import QueueClient
 
-            if stable_rounds >= stable_rounds_required:
-                adapter.info("Drain-run complete: branch registration stabilized.")
-                break
+        for item in items:
+            branch_key = item.get(branch_key_prop)
+            if not branch_key:
+                continue
+            if processed.get(branch_key):
+                adapter.info(f"Branch '{branch_key}' already dispatched; skipping.")
+                continue
+
+            # Build a temporary state snapshot with current_map_item and branch_key
+            temp_state = {
+                "context": {**context, "branch_key": branch_key},
+                "data": {**data, "current_map_item": item},
+            }
+            parser = CommandParser(temp_state, entry_node_def)
+            full_command_message = parser.create_command_message(command_type="ASYNC_REQ")
+
+            capability_id = entry_node_def.get("capability_id", "")
+            service_name = capability_id.split('#')[0].upper()
+            capability_key = f"CCH_CAPABILITY_{service_name}"
+            queue_url = os.environ.get(capability_key) or os.environ.get('FALLBACK_CAPABILITY_QUEUE_URL')
+            if not queue_url:
+                adapter.error(f"No capability queue configured for service '{service_name}'.")
+                continue
+
+            QueueClient().send_message(queue_url, full_command_message)
+            adapter.info(f"Drain-run dispatched async request for branch '{branch_key}' to '{queue_url}'.")
+
+            # Mark branch as processed idempotently
+            graph.update_state(config, {"context": {"processed_branch_requests": {map_fork_node_name: {branch_key: True}}}})
 
     def _get_interrupted_node(self, current_state: Any) -> str | None:
         """Helper to find the name of the node that was interrupted."""
