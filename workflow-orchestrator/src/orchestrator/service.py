@@ -36,7 +36,7 @@ class OrchestratorService:
         self.s3_client = S3Client()
         self.compiled_graphs: Dict[str, CompiledGraph] = {}
         self.graph_cache: Dict[str, CompiledGraph] = {}
-        logger.info("OrchestratorService initialized.")
+        logger.info("OrchestratorService initialized. (v2)")
 
     @classmethod
     def get_instance(cls):
@@ -146,8 +146,31 @@ class OrchestratorService:
                     return
 
             elif command_type in ['ASYNC_RESP', 'EVENT_WAIT_RESP']:
+                routing_hint = command_obj.get("routingHint")
+                branch_key = routing_hint.get("branchKey") if routing_hint else None
+
+                if branch_key:
+                    # This response is for a parallel branch.
+                    # We need to find the thread_id of the branch.
+                    parent_config = {"configurable": {"thread_id": instance_id}}
+                    parent_checkpoint = self.state_saver.get(parent_config)
+                    
+                    branch_checkpoints = {}
+                    for key, value in parent_checkpoint["channel_values"].items():
+                        if key.startswith("branch_checkpoints."):
+                            branch_checkpoints[key.split('.')[1]] = value
+
+                    thread_id = branch_checkpoints.get(branch_key)
+                    if not thread_id:
+                        adapter.error(f"Could not find thread_id for branch key '{branch_key}'.")
+                        return
+                    config = {"configurable": {"thread_id": thread_id}}
+                else:
+                    # This response is for the main thread.
+                    config = {"configurable": {"thread_id": instance_id}}
+
                 # Universal logic for resuming from a pause
-                adapter.info(f"Processing {command_type} for main thread '{instance_id}'.")
+                adapter.info(f"Processing {command_type} for thread '{config['configurable']['thread_id']}'.")
                     
                 current_state = graph.get_state(config)
                 interrupted_node = self._get_interrupted_node(current_state)

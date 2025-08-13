@@ -87,6 +87,8 @@ class GraphBuilder:
             if node_type == "condition":
                 # Condition nodes have their own failure handling within _add_conditional_edge
                 self._add_conditional_edge(node_name, node_config)
+            elif node_type == "map_fork":
+                self._add_map_fork_edge(node_name, node_config)
             else:
                 self.workflow.add_conditional_edges(
                     node_name,
@@ -134,6 +136,7 @@ class GraphBuilder:
         Adds a conditional edge for a map_fork node that uses Send for parallelism.
         This also dynamically injects a registration node at the start of each branch.
         """
+        logger.info(f"Adding map_fork edge for node '{node_name}'")
         branch_entry_node = node_data.get('branch_entry_node')
         if not branch_entry_node:
             raise ValueError(f"map_fork node '{node_name}' must have a 'branch_entry_node' property.")
@@ -147,17 +150,20 @@ class GraphBuilder:
         registration_node_name = f"__internal_register_{node_name}"
         registration_action = partial(
             core_nodes.handle_register_branch, 
-            checkpointer=self.checkpointer
+            checkpointer=self.checkpointer,
+            node_name=registration_node_name
         )
         self.workflow.add_node(registration_node_name, registration_action)
         self.workflow.add_edge(registration_node_name, branch_entry_node)
 
         def map_resolver(state: WorkflowState):
+            logger.info("Executing map_resolver")
             map_on_key = node_data.get("input_list_key")
             if not map_on_key:
                 raise ValueError(f"map_fork node '{node_name}' is missing 'input_list_key'")
             
             items_to_map = state["data"].get(map_on_key, [])
+            logger.info(f"Items to map: {items_to_map}")
             if not isinstance(items_to_map, list):
                 raise TypeError(f"Key '{map_on_key}' for map_fork must be a list in state['data'].")
             
@@ -184,12 +190,12 @@ class GraphBuilder:
                 }
                 sends.append(Send(registration_node_name, branch_state))
             
+            logger.info(f"Returning sends: {sends}")
             return sends
 
         self.workflow.add_conditional_edges(
             node_name,
-            map_resolver,
-            then=join_node
+            map_resolver
         )
 
     def _add_event_wait_edge(self, node_name: str, node_data: Dict[str, Any]):
@@ -318,7 +324,11 @@ class GraphBuilder:
                 raise ValueError(f"No handler found for library function_id: {node_data.get('function_id')}")
             # Wrap the specific library handler in the generic wrapper
             return partial(library_nodes.library_node_wrapper, handler=handler, node_config=node_data, node_name=node_name)
-        elif node_type == 'condition' or node_type == 'fork' or node_type == 'join' or node_type == 'map_fork':
+        elif node_type == 'map_fork':
+            return partial(core_nodes.handle_map_fork, node_name=node_name)
+        elif node_type == 'join':
+            return partial(core_nodes.handle_join, node_name=node_name)
+        elif node_type == 'condition' or node_type == 'fork' or node_type == 'end_branch':
             # These nodes only have routing logic defined in edges, so their action is a no-op.
             return core_nodes.pass_through_action
         else:

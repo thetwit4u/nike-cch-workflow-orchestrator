@@ -18,6 +18,13 @@ def pass_through_action(state: WorkflowState) -> WorkflowState:
     """A no-op action for nodes that only perform routing."""
     return state
 
+def handle_map_fork(state: WorkflowState, node_name: str) -> WorkflowState:
+    """
+    A node handler for the 'map_fork' node that adds logging before the fork.
+    """
+    logger.info(f"Executing 'map_fork' node '{node_name}'. The next step should be the map_resolver.")
+    return state
+
 def handle_join(state: WorkflowState, destination: str = None, node_name: str = None) -> WorkflowState:
     """
     Node handler for the 'join' node.
@@ -78,23 +85,20 @@ def handle_register_branch(state: WorkflowState, config: RunnableConfig, checkpo
 
         logger.info(f"Registering branch. Key: '{branch_key}', Thread ID: '{child_thread_id}'")
 
-        # Get the parent's checkpoint
-        parent_config = {"configurable": {"thread_id": parent_thread_id}}
-        parent_checkpoint = checkpointer.get(parent_config)
+        # Get the parent's checkpoint to get the checkpoint_id
+        parent_config_for_get = {"configurable": {"thread_id": parent_thread_id}}
+        parent_checkpoint_tuple = checkpointer.get_tuple(parent_config_for_get)
 
-        if not parent_checkpoint:
-            # This can happen in rare race conditions. We will let the next run resolve it.
+        if not parent_checkpoint_tuple:
             logger.warning(f"Could not find parent checkpoint for thread '{parent_thread_id}'. Skipping branch registration.")
             return state
 
-        # Update the parent's checkpoint with the new branch info
-        branch_checkpoints = parent_checkpoint["channel_values"].get("branch_checkpoints", {})
-        branch_checkpoints[branch_key] = child_thread_id
-        
-        update = {"branch_checkpoints": branch_checkpoints}
-        
-        # Write the updated checkpoint back
-        checkpointer.put(parent_config, {"channel_values": update}, None)
+        parent_checkpoint_id = parent_checkpoint_tuple.checkpoint["id"]
+
+        # Use put_writes for atomic update of the branch_checkpoints map
+        parent_config_for_put = {"configurable": {"thread_id": parent_thread_id, "checkpoint_id": parent_checkpoint_id}}
+        writes = [(f"branch_checkpoints.{branch_key}", child_thread_id)]
+        checkpointer.put_writes(parent_config_for_put, writes, child_thread_id)
 
     except Exception as e:
         logger.exception("Error in handle_register_branch")

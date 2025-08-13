@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=../../../workflow-orchestrator/src/schemas/json-schema/workflow/workflow-definition.schema.json
 schema_version: "1.1.0"
-workflow_name: "Simplified Import US Workflow v2.0.0"
-workflow_id: "import_us_v1_simplified_v2.0.0"
+workflow_name: "Simplified Import US Workflow v2.1.0"
+workflow_id: "import_us_v1_simplified_v2.1.0"
 entry_point: Enrich_Consignment
 
 initial_context:
@@ -31,7 +31,6 @@ nodes:
       ERROR: Wait_Enrich_Exception_Resolution
     on_failure: Handle_Error
 
-
   Create_Filing_Packs:
     type: async_request
     title: Create Filing Packs
@@ -41,16 +40,62 @@ nodes:
       - consignmentImportEnrichedURI
     request_output_keys:
       - importFilingPacks
-    on_response: Check_Filing_Packs_Response_Status
+    on_response: Submit_Import_Filing_Fork
     on_failure: End_Workflow
 
-  Check_Filing_Packs_Response_Status:
+  Submit_Import_Filing_Fork:
+    type: map_fork
+    title: Fork for each filing pack
+    input_list_key: importFilingPacks
+    branch_key: filingPackId
+    branch_entry_node: Submit_Import_Filing
+    on_failure: Handle_Error
+
+  Submit_Import_Filing:
+    type: async_request
+    title: Submit Import Filing
+    capability_id: declarationcommunicator#submit_import_filing
+    input_keys:
+      - current_map_item
+    request_output_keys:
+      - submission_status
+    on_response: Check_Submit_Response
+    on_failure: Handle_Error # This should be a branch-specific error handler
+
+  Check_Submit_Response:
     type: condition
-    title: Check Filing Packs Response Status
-    condition_on_key: "status"
+    title: Check Submit Response
+    condition_on_key: submission_status.status
     branches:
-      "SUCCESS": End_Workflow
-      "ERROR": Wait_Create_FilingPack_Resolution
+      SUCCESS: Wait_For_Custom_Status_Update
+      ERROR: Handle_Error # This should be a branch-specific error handler
+    on_failure: Handle_Error
+
+  Wait_For_Custom_Status_Update:
+    type: event_wait
+    title: Wait for Custom Status Update
+    on_event: Check_Custom_Status
+    on_failure: Handle_Error
+
+  Check_Custom_Status:
+    type: condition
+    title: Check Custom Status
+    condition_on_key: customStatus.latestStatus.status
+    branches:
+      RELEASED: End_Branch # This will be the end of the branch
+      _default: Wait_For_Custom_Status_Update
+    on_failure: Handle_Error
+
+  End_Branch:
+    type: end_branch
+    title: End of Branch
+
+  Join_Filing_Pack_Submissions:
+    type: join
+    title: Join Filing Pack Submissions
+    join_branches:
+      - Submit_Import_Filing_Fork
+    on_success: End_Workflow
     on_failure: Handle_Error
 
   Clear_Enrichment_Status:
@@ -64,12 +109,6 @@ nodes:
     type: event_wait
     title: Wait for Enrich Exception Resolution
     on_success: Clear_Enrichment_Status # Retry the node
-    on_failure: Handle_Error
-
-  Wait_Create_FilingPack_Resolution:
-    type: event_wait
-    title: Wait for Create FilingPack Resolution
-    on_success: Create_Filing_Packs # Retry the node
     on_failure: Handle_Error
 
   Handle_Error:
