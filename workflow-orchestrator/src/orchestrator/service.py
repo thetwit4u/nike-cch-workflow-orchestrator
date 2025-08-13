@@ -90,7 +90,7 @@ class OrchestratorService:
         merged = left.copy()
         for key, value in right.items():
             if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
-                merged[key] = _deep_merge_dict(merged[key], value)
+                merged[key] = OrchestratorService._deep_merge_dict(merged[key], value)
             else:
                 merged[key] = value
         return merged
@@ -140,6 +140,13 @@ class OrchestratorService:
                     final_state = graph.invoke(initial_state_patch, config)
                     adapter.info(f"Successfully ran workflow. Final state: {final_state}")
                     adapter.info(f"Successfully ran workflow. Final state: {final_state}")
+
+                    # Drain-run: continue invoking to allow all map_fork branches
+                    # to register and dispatch their async requests before returning.
+                    try:
+                        self._drain_parallel_fanout(graph, config, adapter)
+                    except Exception as drain_err:
+                        adapter.warning(f"Drain-run encountered an issue: {drain_err}")
                 else:
                     # Duplicate event handling logic remains the same
                     adapter.info("Duplicate trigger event received for in-progress workflow. Ignoring.")
@@ -235,6 +242,45 @@ class OrchestratorService:
 
         except Exception as e:
             adapter.error(f"Error processing command for workflow '{instance_id}': {e}", exc_info=True)
+
+    def _drain_parallel_fanout(self, graph, config: dict, adapter: logging.LoggerAdapter):
+        """
+        Continue invoking the graph to allow all map_fork branches to start and
+        dispatch their async requests. We loop until the number of registered
+        branch checkpoints stabilizes for a couple of iterations or a max
+        iteration threshold is reached.
+        """
+        max_iterations = 50
+        stable_rounds_required = 2
+        stable_rounds = 0
+        previous_count = -1
+
+        def count_registered_branches() -> int:
+            checkpoint = self.state_saver.get(config)
+            if not checkpoint:
+                return 0
+            channel_values = checkpoint.get("channel_values", {})
+            return sum(1 for key in channel_values.keys() if key.startswith("branch_checkpoints."))
+
+        for i in range(max_iterations):
+            before = count_registered_branches()
+            adapter.info(f"Drain-run iteration {i+1}: registered branches before step = {before}")
+
+            # Advance execution; this lets LangGraph run pending Send tasks/branches
+            graph.invoke(None, config)
+
+            after = count_registered_branches()
+            adapter.info(f"Drain-run iteration {i+1}: registered branches after step = {after}")
+
+            if after == previous_count:
+                stable_rounds += 1
+            else:
+                stable_rounds = 0
+            previous_count = after
+
+            if stable_rounds >= stable_rounds_required:
+                adapter.info("Drain-run complete: branch registration stabilized.")
+                break
 
     def _get_interrupted_node(self, current_state: Any) -> str | None:
         """Helper to find the name of the node that was interrupted."""
