@@ -95,9 +95,15 @@ def handle_register_branch(state: WorkflowState, config: RunnableConfig, checkpo
 
         parent_checkpoint_id = parent_checkpoint_tuple.checkpoint["id"]
 
-        # Use put_writes for atomic update of the branch_checkpoints map
+        # Use put_writes for atomic updates on the parent checkpoint
         parent_config_for_put = {"configurable": {"thread_id": parent_thread_id, "checkpoint_id": parent_checkpoint_id}}
-        writes = [(f"branch_checkpoints.{branch_key}", child_thread_id)]
+        writes = []
+        # Map the business branch key to this task's thread id (may equal parent in this model)
+        writes.append((f"branch_checkpoints.{branch_key}", child_thread_id))
+        # Persist the branch's current map item so responses can restore context without per-branch threads
+        current_map_item = state.get("data", {}).get("current_map_item")
+        if current_map_item is not None:
+            writes.append((f"map_items_by_key.{branch_key}", current_map_item))
         checkpointer.put_writes(parent_config_for_put, writes, child_thread_id)
 
     except Exception as e:

@@ -153,21 +153,30 @@ class OrchestratorService:
                 branch_key = routing_hint.get("branchKey") if routing_hint else None
 
                 if branch_key:
-                    # This response is for a parallel branch.
-                    # We need to find the thread_id of the branch.
+                    # This response targets a parallel branch; restore parent thread and context.
                     parent_config = {"configurable": {"thread_id": instance_id}}
                     parent_checkpoint = self.state_saver.get(parent_config)
-                    
-                    branch_checkpoints = {}
-                    for key, value in parent_checkpoint["channel_values"].items():
-                        if key.startswith("branch_checkpoints."):
-                            branch_checkpoints[key.split('.')[1]] = value
-
-                    thread_id = branch_checkpoints.get(branch_key)
-                    if not thread_id:
-                        adapter.error(f"Could not find thread_id for branch key '{branch_key}'.")
+                    if not parent_checkpoint:
+                        adapter.error("Parent checkpoint not found; cannot resume branch.")
                         return
-                    config = {"configurable": {"thread_id": thread_id}}
+
+                    channel_values = parent_checkpoint.get("channel_values", {})
+                    # If a dedicated branch thread exists, use it. Otherwise, stay on parent.
+                    thread_id = None
+                    for key, value in channel_values.items():
+                        if key == f"branch_checkpoints.{branch_key}":
+                            thread_id = value
+                            break
+                    if thread_id:
+                        config = {"configurable": {"thread_id": thread_id}}
+                    else:
+                        # Fallback: no separate branch thread. Use parent and restore current_map_item from persisted map.
+                        map_item = channel_values.get(f"map_items_by_key.{branch_key}")
+                        if map_item is None:
+                            adapter.error(f"Could not find thread_id or map item for branch key '{branch_key}'.")
+                            return
+                        config = {"configurable": {"thread_id": instance_id}}
+                        graph.update_state(config, {"data": {"current_map_item": map_item}})
                 else:
                     # This response is for the main thread.
                     config = {"configurable": {"thread_id": instance_id}}
