@@ -141,12 +141,8 @@ class OrchestratorService:
                     adapter.info(f"Successfully ran workflow. Final state: {final_state}")
                     adapter.info(f"Successfully ran workflow. Final state: {final_state}")
 
-                    # Drain-run: continue invoking to allow all map_fork branches
-                    # to register and dispatch their async requests before returning.
-                    try:
-                        self._drain_parallel_fanout(graph, config, adapter)
-                    except Exception as drain_err:
-                        adapter.warning(f"Drain-run encountered an issue: {drain_err}")
+                    # Note: Do NOT drain-run at initial start. Doing so while paused at
+                    # a non-fork async_request can duplicate outbound requests.
                 else:
                     # Duplicate event handling logic remains the same
                     adapter.info("Duplicate trigger event received for in-progress workflow. Ignoring.")
@@ -232,6 +228,14 @@ class OrchestratorService:
                 graph.update_state(config, {"data": update_data}, as_node=transition_node)
                 final_state = graph.invoke(None, config)
                 adapter.info(f"Successfully resumed and ran workflow to completion. Final state: {final_state}")
+
+                # If we are transitioning into a map_fork, drain-run to let all branches send their async requests.
+                transitioned_node_def = definition.get("nodes", {}).get(transition_node, {})
+                if transitioned_node_def.get("type") == "map_fork":
+                    try:
+                        self._drain_parallel_fanout(graph, config, adapter)
+                    except Exception as drain_err:
+                        adapter.warning(f"Drain-run after map_fork transition encountered an issue: {drain_err}")
 
                # --- Publish AsyncRequestEnded Event ---
 
