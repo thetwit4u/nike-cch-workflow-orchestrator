@@ -303,7 +303,6 @@ class OrchestratorService:
             adapter.error(f"map_fork input_list_key '{input_list_key}' is not a list; aborting drain-run.")
             return
 
-        processed_key = f"processed_branch_requests.{map_fork_node_name}"
         processed = (context.get("processed_branch_requests", {}).get(map_fork_node_name)) or {}
 
         from utils.command_parser import CommandParser
@@ -317,7 +316,9 @@ class OrchestratorService:
                 adapter.info(f"Branch '{branch_key}' already dispatched; skipping.")
                 continue
 
-            # Build a temporary state snapshot with current_map_item and branch_key
+            # Persist under context.map_items_by_key so response routing can restore context
+            graph.update_state(config, {"context": {"map_items_by_key": {branch_key: item}}})
+
             temp_state = {
                 "context": {**context, "branch_key": branch_key},
                 "data": {**data, "current_map_item": item},
@@ -336,7 +337,6 @@ class OrchestratorService:
             QueueClient().send_message(queue_url, full_command_message)
             adapter.info(f"Drain-run dispatched async request for branch '{branch_key}' to '{queue_url}'.")
 
-            # Mark branch as processed idempotently
             graph.update_state(config, {"context": {"processed_branch_requests": {map_fork_node_name: {branch_key: True}}}})
 
     def _get_interrupted_node(self, current_state: Any) -> str | None:
