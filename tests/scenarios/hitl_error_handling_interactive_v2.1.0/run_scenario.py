@@ -53,6 +53,11 @@ class InteractiveTestRunner:
         workflow_state_table = self.cdk_outputs['WorkflowStateTableName']
         self.workflow_verifier = WorkflowVerifier(self.aws_client, workflow_state_table)
 
+        # Track per-branch custom status update progress
+        self.custom_updates_by_branch = self._load_custom_status_updates()
+        self.branch_update_index: dict[str, int] = {}
+        self.branch_done: dict[str, bool] = {}
+
         print("\n--- Using the following AWS resources ---")
         print(f"  Command Queue URL: {self.command_queue_url}")
         print(f"  Fallback Queue URL: {self.fallback_capability_queue_url}")
@@ -89,6 +94,88 @@ class InteractiveTestRunner:
                 capability_name = key.replace('CCH_CAPABILITY_', '')
                 capabilities.append(capability_name)
         return sorted(capabilities)
+
+    def _load_custom_status_updates(self) -> dict[str, list[Path]]:
+        """Preload Wait_For_Custom_Status_Update_* files and group by filingPackId."""
+        updates_by_branch: dict[str, list[Path]] = {}
+        numbered = sorted(self.scenario_path.glob('Wait_For_Custom_Status_Update_*.json'))
+        for p in numbered:
+            try:
+                with open(p, 'r') as f:
+                    data = json.load(f)
+                branch_key = (
+                    data.get('command', {})
+                        .get('payload', {})
+                        .get('customStatus', {})
+                        .get('filingPackId')
+                )
+                if not branch_key:
+                    continue
+                updates_by_branch.setdefault(branch_key, []).append(p)
+            except Exception:
+                continue
+        # Keep deterministic order per branch
+        for k in list(updates_by_branch.keys()):
+            updates_by_branch[k] = sorted(updates_by_branch[k])
+        return updates_by_branch
+
+    def _send_next_custom_status_update(self, workflow_def_uri: str, correlation_id: str) -> bool:
+        """
+        Send the next EVENT_WAIT_RESP for one branch paused at Wait_For_Custom_Status_Update.
+        - Picks the next numbered file per branch
+        - Forces command.type to EVENT_WAIT_RESP
+        - Adds routingHint.branchKey for correct branch routing
+        Returns True if a message was sent, False if all branches are done.
+        """
+        # Iterate branches in sorted order for fairness
+        for branch_key in sorted(self.custom_updates_by_branch.keys()):
+            if self.branch_done.get(branch_key):
+                continue
+            idx = self.branch_update_index.get(branch_key, 0)
+            files = self.custom_updates_by_branch.get(branch_key, [])
+            if idx >= len(files):
+                # No more updates for this branch; mark done
+                self.branch_done[branch_key] = True
+                continue
+            file_path = files[idx]
+            with open(file_path, 'r') as f:
+                payload_doc = json.load(f)
+
+            # Build the resume command
+            cmd = payload_doc.get('command', {})
+            # Ensure structure and override fields
+            resume_message = {
+                "workflowInstanceId": correlation_id,
+                "correlationId": correlation_id,
+                "workflowDefinitionURI": workflow_def_uri,
+                "command": {
+                    "type": "EVENT_WAIT_RESP",
+                    "id": str(uuid.uuid4()),
+                    "source": cmd.get('source') or 'CustomStatusEmitter',
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "status": cmd.get('status') or 'SUCCESS',
+                    "payload": cmd.get('payload', {}),
+                    "routingHint": {"branchKey": branch_key}
+                }
+            }
+
+            latest_status = (
+                resume_message['command']['payload']
+                    .get('customStatus', {})
+                    .get('latestStatus', {})
+                    .get('status')
+            )
+
+            print(f"\nSending custom status update from {file_path.name} for branch {branch_key} (status={latest_status})")
+            self._send_sqs_message(self.command_queue_url, resume_message)
+            print("Resume command sent.")
+
+            # Advance index and mark done on RELEASED
+            self.branch_update_index[branch_key] = idx + 1
+            if latest_status == 'RELEASED':
+                self.branch_done[branch_key] = True
+            return True
+        return False
 
     def _format_json(self, data: dict) -> str:
         """Format JSON with syntax highlighting if pygments is available."""
@@ -151,6 +238,8 @@ class InteractiveTestRunner:
             workflow_def_file,
             f"workflows/{workflow_def_file.name}"
         )
+        # Store for later resume commands
+        self.workflow_def_uri = workflow_def_uri
         consignment_uri = self._upload_file_to_s3(
             self.ingest_bucket,
             self.scenario_path / 'consignment.json',
@@ -322,41 +411,37 @@ class InteractiveTestRunner:
                     break
 
                 print(f"\nWorkflow appears to be paused, likely at node '{last_paused_node}'.")
-                # Look for a file named after the paused node to send as a resolving command
-                resume_file = self.scenario_path / f"{last_paused_node}.json"
-                if not resume_file.exists():
-                    print(f"No resume file found for paused node '{last_paused_node}'. The workflow may be complete or stuck.")
-                    break
-                
-                print(f"Found resume command file: {resume_file.name}")
-                input("--- Press Enter to send the resume command ---")
-
-                with open(resume_file, 'r') as f:
-                    resume_payload = json.load(f)
-                
-                # Populate all placeholder values in the resume command
-                resume_payload['correlationId'] = correlation_id
-                resume_payload['workflowInstanceId'] = correlation_id
-                
-                # Get workflow definition URI from the first capability message if available
-                if 'workflowDefinitionURI' in resume_payload and resume_payload['workflowDefinitionURI'] == 'PLACEHOLDER_WORKFLOW_DEFINITION_URI':
-                    # Try to get from previous capability message or construct it
-                    workflow_def_file = next(self.scenario_path.glob('*.yaml'))
-                    resume_payload['workflowDefinitionURI'] = f"s3://{self.definitions_bucket}/workflows/{workflow_def_file.name}"
-                
-                # Populate command-level placeholders
-                if 'command' in resume_payload:
-                    command = resume_payload['command']
-                    if command.get('id') == 'PLACEHOLDER_COMMAND_ID':
-                        command['id'] = str(uuid.uuid4())
-                    if command.get('timestamp') == 'PLACEHOLDER_TIMESTAMP':
-                        command['timestamp'] = datetime.now(timezone.utc).isoformat()
-
-                print("Resume command payload:")
-                print(self._format_json(resume_payload))
-                self._send_sqs_message(self.command_queue_url, resume_payload)
-                print("Resume command sent.")
-                last_paused_node = None # Reset, as we've sent the resume command
+                if last_paused_node == 'Wait_For_Custom_Status_Update':
+                    sent = self._send_next_custom_status_update(self.workflow_def_uri, correlation_id)
+                    if not sent:
+                        print("All branches released or no more updates available.")
+                        last_paused_node = None
+                else:
+                    # Legacy single-file resume for other event_wait nodes
+                    resume_file = self.scenario_path / f"{last_paused_node}.json"
+                    if not resume_file.exists():
+                        print(f"No resume file found for paused node '{last_paused_node}'. The workflow may be complete or stuck.")
+                        break
+                    print(f"Found resume command file: {resume_file.name}")
+                    input("--- Press Enter to send the resume command ---")
+                    with open(resume_file, 'r') as f:
+                        resume_payload = json.load(f)
+                    resume_payload['correlationId'] = correlation_id
+                    resume_payload['workflowInstanceId'] = correlation_id
+                    if 'workflowDefinitionURI' in resume_payload and resume_payload['workflowDefinitionURI'] == 'PLACEHOLDER_WORKFLOW_DEFINITION_URI':
+                        workflow_def_file = next(self.scenario_path.glob('*.yaml'))
+                        resume_payload['workflowDefinitionURI'] = f"s3://{self.definitions_bucket}/workflows/{workflow_def_file.name}"
+                    if 'command' in resume_payload:
+                        command = resume_payload['command']
+                        if command.get('id') == 'PLACEHOLDER_COMMAND_ID':
+                            command['id'] = str(uuid.uuid4())
+                        if command.get('timestamp') == 'PLACEHOLDER_TIMESTAMP':
+                            command['timestamp'] = datetime.now(timezone.utc).isoformat()
+                    print("Resume command payload:")
+                    print(self._format_json(resume_payload))
+                    self._send_sqs_message(self.command_queue_url, resume_payload)
+                    print("Resume command sent.")
+                    last_paused_node = None
 
             step += 1
 
