@@ -104,6 +104,8 @@ def handle_register_branch(state: WorkflowState, config: RunnableConfig, checkpo
         current_map_item = state.get("data", {}).get("current_map_item")
         if current_map_item is not None:
             writes.append((f"map_items_by_key.{branch_key}", current_map_item))
+            # Also persist under context.map_items_by_key to make it visible via get_state
+            writes.append((f"context.map_items_by_key.{branch_key}", current_map_item))
         checkpointer.put_writes(parent_config_for_put, writes, child_thread_id)
 
     except Exception as e:

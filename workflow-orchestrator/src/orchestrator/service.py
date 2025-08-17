@@ -173,6 +173,11 @@ class OrchestratorService:
                         # Fallback: no separate branch thread. Use parent and restore current_map_item from persisted map.
                         map_item = channel_values.get(f"map_items_by_key.{branch_key}")
                         if map_item is None:
+                            # Try nested context map persisted during drain-run
+                            parent_state = graph.get_state(parent_config)
+                            nested_map = parent_state.values.get('context', {}).get('map_items_by_key', {}) or {}
+                            map_item = nested_map.get(branch_key)
+                        if map_item is None:
                             adapter.error(f"Could not find thread_id or map item for branch key '{branch_key}'.")
                             return
                         config = {"configurable": {"thread_id": instance_id}}
