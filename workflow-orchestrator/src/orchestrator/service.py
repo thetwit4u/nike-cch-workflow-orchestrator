@@ -151,6 +151,7 @@ class OrchestratorService:
             elif command_type in ['ASYNC_RESP', 'EVENT_WAIT_RESP']:
                 routing_hint = command_obj.get("routingHint")
                 branch_key = routing_hint.get("branchKey") if routing_hint else None
+                is_branch_response = bool(branch_key)
 
                 if branch_key:
                     # This response targets a parallel branch; restore parent thread and context.
@@ -191,12 +192,13 @@ class OrchestratorService:
                 
                 current_state = graph.get_state(config)
 
-                # Idempotency for ASYNC_RESP: ignore if not paused or already processed
+                # Idempotency for ASYNC_RESP: for branch responses, we proceed even if parent thread isn't paused
                 if command_type == 'ASYNC_RESP':
-                    # If the graph is not currently paused on this thread, ignore late/duplicate responses
-                    if not current_state.next:
-                        adapter.info("Not paused on this thread; ignoring ASYNC_RESP as idempotent.")
-                        return
+                    if not is_branch_response:
+                        # If the graph is not currently paused on this thread, ignore late/duplicate responses
+                        if not current_state.next:
+                            adapter.info("Not paused on this thread; ignoring ASYNC_RESP as idempotent.")
+                            return
                     dedupe_key = command_obj.get('in_reply_to') or command_obj.get('id')
                     processed = current_state.values.get('context', {}).get('processed_async_replies', {}) or {}
                     if processed.get(dedupe_key):
@@ -205,7 +207,16 @@ class OrchestratorService:
                     # Mark as processed immediately to protect from rapid duplicates
                     graph.update_state(config, {"context": {"processed_async_replies": {dedupe_key: True}}})
 
-                interrupted_node = self._get_interrupted_node(current_state)
+                # Determine interrupted node. For branch responses, infer the async node that consumes current_map_item.
+                interrupted_node = None
+                if is_branch_response:
+                    # Find the node with type async_request that has 'current_map_item' as input
+                    for node_name, node_def in definition.get("nodes", {}).items():
+                        if node_def.get("type") == "async_request" and 'current_map_item' in (node_def.get('input_keys') or []):
+                            interrupted_node = node_name
+                            break
+                if not interrupted_node:
+                    interrupted_node = self._get_interrupted_node(current_state)
 
                 if not interrupted_node:
                     adapter.error(f"Could not determine interrupted node from state. Cannot proceed with {command_type}.")
