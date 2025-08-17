@@ -319,7 +319,6 @@ class GraphBuilder:
                 node_name=node_name,
                 event_publisher=self.event_publisher,
                 workflow_definition=self.definition,
-                checkpointer=self.checkpointer,
             )
         elif node_type == "sync_call":
             return partial(capability_nodes.handle_sync_call, node_config=node_data, node_name=node_name)
