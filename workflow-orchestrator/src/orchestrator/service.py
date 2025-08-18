@@ -245,7 +245,11 @@ class OrchestratorService:
                 if command_type == 'ASYNC_RESP':
                     transition_node = node_def.get("on_response")
                 else: # EVENT_WAIT_RESP
-                    transition_node = node_def.get("on_success")
+                    # Support both 'on_event' and 'on_success' for event_wait nodes
+                    if node_def.get("type") == "event_wait":
+                        transition_node = node_def.get("on_event") or node_def.get("on_success")
+                    else:
+                        transition_node = node_def.get("on_success")
 
                 if not transition_node:
                     adapter.error(f"Node '{interrupted_node}' is missing transition target for {command_type}.")
