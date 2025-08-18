@@ -402,7 +402,12 @@ class InteractiveTestRunner:
                     else:
                         print(f"ERROR: No HITL resolution file found: {resume_file}")
                 else:
-                    last_paused_node = None  # Reset for success responses
+                    # On successful Submit_Import_Filing, the workflow routes to
+                    # Check_Submit_Response -> Wait_For_Custom_Status_Update, so prepare to send custom updates
+                    if node_name == 'Submit_Import_Filing' and response_payload.get('status') == 'SUCCESS':
+                        last_paused_node = 'Wait_For_Custom_Status_Update'
+                    else:
+                        last_paused_node = None  # Reset for other success responses
 
             else:
                 # No message received, likely paused at an event_wait node
