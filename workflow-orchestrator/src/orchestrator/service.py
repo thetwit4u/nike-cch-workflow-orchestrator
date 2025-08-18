@@ -139,7 +139,6 @@ class OrchestratorService:
 
                     final_state = graph.invoke(initial_state_patch, config)
                     adapter.info(f"Successfully ran workflow. Final state: {final_state}")
-                    adapter.info(f"Successfully ran workflow. Final state: {final_state}")
 
                     # Note: Do NOT drain-run at initial start. Doing so while paused at
                     # a non-fork async_request can duplicate outbound requests.
@@ -276,10 +275,6 @@ class OrchestratorService:
                         self._drain_parallel_fanout(graph, config, adapter, definition, transition_node)
                     except Exception as drain_err:
                         adapter.warning(f"Drain-run after map_fork transition encountered an issue: {drain_err}")
-
-               # --- Publish AsyncRequestEnded Event ---
-
-
 
             else:
                 adapter.warning(f"Unknown command type '{command_type}' cannot be processed.")
