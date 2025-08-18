@@ -38,6 +38,17 @@ def handle_join(state: WorkflowState, destination: str = None, node_name: str = 
     """
     logger.info("Executing join node")
     try:
+        # Barrier: if this join expects specific branches, wait until all are completed
+        join_expectations = state.get("context", {}).get("join_expected_by_join", {}) or {}
+        expected_keys = join_expectations.get(node_name) or []
+        if expected_keys:
+            completed_map = state.get("context", {}).get("completed_branch_keys", {}) or {}
+            completed_keys = {key for key, done in completed_map.items() if done}
+            remaining = [k for k in expected_keys if k not in completed_keys]
+            if remaining:
+                logger.info(f"Join '{node_name}' waiting for remaining branches: {remaining}")
+                return interrupt("Waiting for branches to complete")
+
         if destination:
             # This is a reduce operation for a map_fork
             logger.info(f"Performing reduce operation for map_fork into key '{destination}'.")
@@ -68,6 +79,22 @@ def handle_join(state: WorkflowState, destination: str = None, node_name: str = 
         }
         state["is_error"] = True
 
+    return state
+
+def handle_end_branch(state: WorkflowState, node_name: str) -> WorkflowState:
+    """
+    Marks the current branch as completed so the join barrier can proceed
+    when all branches have finished.
+    """
+    logger.info(f"Executing end_branch node '{node_name}'. Marking branch as completed.")
+    branch_key = state.get("context", {}).get("branch_key")
+    if not branch_key:
+        logger.warning("No 'branch_key' found in context while ending branch.")
+        return state
+
+    context = state.setdefault("context", {})
+    completed_map = context.setdefault("completed_branch_keys", {})
+    completed_map[branch_key] = True
     return state
 
 def handle_register_branch(state: WorkflowState, config: RunnableConfig, checkpointer: BaseCheckpointSaver, node_name: str) -> WorkflowState:

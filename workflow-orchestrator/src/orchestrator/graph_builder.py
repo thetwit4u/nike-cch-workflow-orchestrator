@@ -98,6 +98,14 @@ class GraphBuilder:
                         "on_success": self._get_success_path(node_config) or END
                     }
                 )
+
+        # Post-processing: wire end_branch nodes to join if there is a single join target
+        end_branch_nodes = [n for n, cfg in self.definition["nodes"].items() if cfg.get("type") == "end_branch"]
+        join_nodes = [n for n, cfg in self.definition["nodes"].items() if cfg.get("type") == "join"]
+        if len(join_nodes) == 1:
+            sole_join = join_nodes[0]
+            for end_node in end_branch_nodes:
+                self.workflow.add_edge(end_node, sole_join)
                 
     def _get_success_path(self, node_config: dict) -> str | None:
         """Helper to get the primary success transition for a node."""
@@ -334,7 +342,9 @@ class GraphBuilder:
             return partial(core_nodes.handle_map_fork, node_name=node_name)
         elif node_type == 'join':
             return partial(core_nodes.handle_join, node_name=node_name)
-        elif node_type == 'condition' or node_type == 'fork' or node_type == 'end_branch':
+        elif node_type == 'end_branch':
+            return partial(core_nodes.handle_end_branch, node_name=node_name)
+        elif node_type == 'condition' or node_type == 'fork':
             # These nodes only have routing logic defined in edges, so their action is a no-op.
             return core_nodes.pass_through_action
         else:
