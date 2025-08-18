@@ -206,14 +206,30 @@ class OrchestratorService:
                     # Mark as processed immediately to protect from rapid duplicates
                     graph.update_state(config, {"context": {"processed_async_replies": {dedupe_key: True}}})
 
-                # Determine interrupted node. For branch responses, infer the async node that consumes current_map_item.
+                # Determine interrupted node.
                 interrupted_node = None
                 if is_branch_response:
-                    # Find the node with type async_request that has 'current_map_item' as input
-                    for node_name, node_def in definition.get("nodes", {}).items():
-                        if node_def.get("type") == "async_request" and 'current_map_item' in (node_def.get('input_keys') or []):
-                            interrupted_node = node_name
-                            break
+                    if command_type == 'EVENT_WAIT_RESP':
+                        # Prefer the currently paused event_wait node if present
+                        current_node_name = current_state.values.get('context', {}).get('current_node')
+                        if current_node_name:
+                            maybe_node_def = definition.get("nodes", {}).get(current_node_name, {})
+                            if maybe_node_def.get("type") == "event_wait":
+                                interrupted_node = current_node_name
+
+                        # If not found, find an event_wait node for branch updates (one using 'on_event')
+                        if not interrupted_node:
+                            for node_name, node_def in definition.get("nodes", {}).items():
+                                if node_def.get("type") == "event_wait" and node_def.get("on_event"):
+                                    interrupted_node = node_name
+                                    break
+                    else:
+                        # ASYNC_RESP for a branch: find the async node that consumes current_map_item
+                        for node_name, node_def in definition.get("nodes", {}).items():
+                            if node_def.get("type") == "async_request" and 'current_map_item' in (node_def.get('input_keys') or []):
+                                interrupted_node = node_name
+                                break
+
                 if not interrupted_node:
                     interrupted_node = self._get_interrupted_node(current_state)
 
@@ -315,8 +331,13 @@ class OrchestratorService:
         from clients.queue_client import QueueClient
 
         # If one branch request already executed during this invoke, it will be the
-        # current_map_item in data; skip re-dispatching for that branch to avoid duplicates.
+        # current_map_item in data; persist it and skip re-dispatching for that branch to avoid duplicates.
         in_flight_branch_id = (data.get('current_map_item') or {}).get('filingPackId')
+        in_flight_item = data.get('current_map_item') if in_flight_branch_id else None
+
+        # Persist the in-flight branch item if it exists so later responses can restore context
+        if in_flight_item and in_flight_branch_id:
+            graph.update_state(config, {"context": {"map_items_by_key": {in_flight_branch_id: in_flight_item}}})
 
         for item in items:
             branch_key = item.get(branch_key_prop)
