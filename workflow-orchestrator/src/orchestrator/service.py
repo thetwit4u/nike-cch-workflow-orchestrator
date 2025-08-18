@@ -319,12 +319,19 @@ class OrchestratorService:
         from utils.command_parser import CommandParser
         from clients.queue_client import QueueClient
 
+        # If one branch request already executed during this invoke, it will be the
+        # current_map_item in data; skip re-dispatching for that branch to avoid duplicates.
+        in_flight_branch_id = (data.get('current_map_item') or {}).get('filingPackId')
+
         for item in items:
             branch_key = item.get(branch_key_prop)
             if not branch_key:
                 continue
             if processed.get(branch_key):
                 adapter.info(f"Branch '{branch_key}' already dispatched; skipping.")
+                continue
+            if in_flight_branch_id and branch_key == in_flight_branch_id:
+                adapter.info(f"Branch '{branch_key}' already in-flight from main execution; skipping drain-run dispatch.")
                 continue
 
             # Persist under context.map_items_by_key so response routing can restore context
