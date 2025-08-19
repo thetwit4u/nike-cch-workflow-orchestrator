@@ -171,6 +171,14 @@
     },
     "endBranchNode": { "type": "object", "properties": { "type": { "const": "end_branch" } } },
     "endNode": { "type": "object", "properties": { "type": { "const": "end" } } },
+    "setStateNode": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "set_state" },
+        "static_outputs": { "type": "object", "additionalProperties": true },
+        "on_success": { "type": "string", "description": "Node to transition to after setting state." }
+      }
+    },
     "scheduleParameters": {
       "type": "object",
       "properties": {
