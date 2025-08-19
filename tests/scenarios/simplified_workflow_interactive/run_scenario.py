@@ -63,6 +63,10 @@ class InteractiveTestRunner:
         print(f"  Ingest Bucket:      {self.ingest_bucket}")
         print("---------------------------------------\n")
 
+        # Initialize output tracking
+        self.output_dir: Path | None = None
+        self._message_index: int = 0
+
     def _load_cdk_outputs(self) -> dict:
         """Loads the CDK outputs using the robust CdkOutputsParser."""
         try:
@@ -111,6 +115,34 @@ class InteractiveTestRunner:
                 pass
         
         return json_str
+
+    def _ensure_output_dir(self):
+        """Ensure the output directory exists for this scenario run."""
+        if self.output_dir is None:
+            raise RuntimeError("Output directory not initialized. Call _init_output_dir first.")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _init_output_dir(self, correlation_id: str):
+        """Initialize the output directory using the scenario name and correlation id."""
+        project_root = Path(__file__).parent.parent.parent.parent
+        self.output_dir = project_root / 'tests' / 'output' / self.scenario_path.name / correlation_id
+        self._message_index = 0
+        self._ensure_output_dir()
+
+    def _save_command_sample(self, data: dict, label: str | None = None):
+        """Persist an outgoing command to the scenario's output folder as JSON."""
+        try:
+            self._ensure_output_dir()
+            self._message_index += 1
+            cmd_type = (data.get('command') or {}).get('type') or 'UNKNOWN'
+            safe_label = label or cmd_type
+            filename = f"{self._message_index:02d}_{safe_label}.json"
+            target = self.output_dir / filename
+            with open(target, 'w') as f:
+                json.dump(data, f, indent=2)
+            print(f"Saved command sample to {target}")
+        except Exception as e:
+            print(f"Warning: failed to write command sample: {e}")
 
     def _send_sqs_message(self, queue_url: str, message_body: dict):
         """Sends a message to the specified SQS queue."""
@@ -275,6 +307,8 @@ class InteractiveTestRunner:
         if not PYGMENTS_AVAILABLE:
             print("💡 Tip: Install 'pygments' for colorized JSON output: pip install pygments")
         correlation_id = f"interactive-test-{uuid.uuid4()}"
+        # Initialize per-run output directory
+        self._init_output_dir(correlation_id)
 
         # 1. Upload workflow definition and consignment data
         try:
@@ -320,6 +354,7 @@ class InteractiveTestRunner:
         print(self._format_json(command_message))
         print("--------------------------------------")
         self._send_sqs_message(self.command_queue_url, command_message)
+        self._save_command_sample(command_message, label='EVENT_Start_Workflow')
 
         # 3. Interactive loop - expect only async_request nodes to send capability messages
         step = 1
@@ -362,7 +397,34 @@ class InteractiveTestRunner:
                 
             # Load and send the response
             print(f"\n--- Sending Response for {node_name} ---")
-            self._send_capability_response(capability_message, response_file)
+            # Build response message so we can both send and save
+            with open(response_file, 'r') as f:
+                response_payload = json.load(f)
+            original_header = capability_message.get('header', {})
+            response_message = {
+                "workflowInstanceId": original_header.get('workflowInstanceId'),
+                "correlationId": original_header.get('correlationId'),
+                "workflowDefinitionURI": original_header.get('workflowDefinitionURI'),
+                "command": {
+                    "type": "ASYNC_RESP",
+                    "id": str(uuid.uuid4()),
+                    "source": "MockCapabilityService",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "in_reply_to": original_header.get('commandId'),
+                    "status": "SUCCESS" if response_payload.get('status') == 'SUCCESS' else 'ERROR',
+                    "payload": response_payload.get('data', {})
+                }
+            }
+            if 'routingHint' in original_header:
+                response_message['command']['routingHint'] = original_header['routingHint']
+            # Show and send
+            print(self._format_json(response_message))
+            input("--- Press Enter to send the response back to the orchestrator ---")
+            self._send_sqs_message(self.command_queue_url, response_message)
+            print("Response sent.")
+            self._save_command_sample(response_message, label=f"ASYNC_RESP_{node_name}")
+            # Delete processed message
+            self._delete_processed_message()
             step += 1
 
         # 4. Verify final workflow state

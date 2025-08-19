@@ -64,6 +64,10 @@ class InteractiveTestRunner:
         print(f"  Ingest Bucket:      {self.ingest_bucket}")
         print("---------------------------------------\n")
 
+        # Initialize output tracking
+        self.output_dir: Path | None = None
+        self._message_index: int = 0
+
     def _load_cdk_outputs(self) -> dict:
         """Loads the CDK outputs using the robust CdkOutputsParser."""
         try:
@@ -113,6 +117,34 @@ class InteractiveTestRunner:
             message_body=message_body
         )
 
+    def _ensure_output_dir(self):
+        """Ensure the output directory exists for this scenario run."""
+        if self.output_dir is None:
+            raise RuntimeError("Output directory not initialized. Call _init_output_dir first.")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _init_output_dir(self, correlation_id: str):
+        """Initialize the output directory using the scenario name and correlation id."""
+        project_root = Path(__file__).parent.parent.parent.parent
+        self.output_dir = project_root / 'tests' / 'output' / self.scenario_path.name / correlation_id
+        self._message_index = 0
+        self._ensure_output_dir()
+
+    def _save_command_sample(self, data: dict, label: str | None = None):
+        """Persist an outgoing command to the scenario's output folder as JSON."""
+        try:
+            self._ensure_output_dir()
+            self._message_index += 1
+            cmd_type = (data.get('command') or {}).get('type') or 'UNKNOWN'
+            safe_label = label or cmd_type
+            filename = f"{self._message_index:02d}_{safe_label}.json"
+            target = self.output_dir / filename
+            with open(target, 'w') as f:
+                json.dump(data, f, indent=2)
+            print(f"Saved command sample to {target}")
+        except Exception as e:
+            print(f"Warning: failed to write command sample: {e}")
+
     def _receive_message(self, queue_url: str, wait_time_seconds: int = 20) -> tuple[dict, str] | None:
         """Receives a single message from the specified SQS queue.
         Returns tuple of (message_body, receipt_handle) or None.
@@ -137,6 +169,8 @@ class InteractiveTestRunner:
         if not PYGMENTS_AVAILABLE:
             print("💡 Tip: Install 'pygments' for colorized JSON output: pip install pygments")
         correlation_id = f"interactive-test-{uuid.uuid4()}"
+        # Initialize per-run output directory
+        self._init_output_dir(correlation_id)
 
         # 1. Upload workflow definition and consignment data
         # Find the workflow definition file in the scenario directory (assumes one YAML file)
@@ -179,6 +213,7 @@ class InteractiveTestRunner:
             }
         }
         self._send_sqs_message(self.command_queue_url, command_message)
+        self._save_command_sample(command_message, label='EVENT_Start_Workflow')
 
         # 3. Interactive loop
         step = 1
@@ -260,6 +295,7 @@ class InteractiveTestRunner:
                 input("--- Press Enter to send the response back to the orchestrator ---")
                 self._send_sqs_message(self.command_queue_url, response_message)
                 print("Response sent.")
+                self._save_command_sample(response_message, label=f"ASYNC_RESP_{node_name}_{call_count}")
                 
                 # Delete the processed capability message from the queue
                 self._delete_processed_message()
@@ -302,6 +338,7 @@ class InteractiveTestRunner:
                         input("--- Press Enter to send the HITL resolution ---")
                         self._send_sqs_message(self.command_queue_url, resume_payload)
                         print("HITL resolution sent.")
+                        self._save_command_sample(resume_payload, label=f"EVENT_WAIT_RESP_{last_paused_node}")
                         
                         # Give the workflow time to process HITL resolution and retry the capability
                         print("Waiting for workflow to process HITL resolution and retry capability...")
@@ -355,6 +392,7 @@ class InteractiveTestRunner:
                 print(self._format_json(resume_payload))
                 self._send_sqs_message(self.command_queue_url, resume_payload)
                 print("Resume command sent.")
+                self._save_command_sample(resume_payload, label=f"EVENT_WAIT_RESP_{last_paused_node}")
                 last_paused_node = None # Reset, as we've sent the resume command
 
             step += 1
