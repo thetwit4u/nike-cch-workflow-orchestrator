@@ -394,6 +394,13 @@ class InteractiveTestRunner:
                 print(f"ERROR: No response file found for node '{node_name}'. Cannot continue.")
                 print(f"Looked for: {response_file}")
                 break
+
+            # Save the received capability request for reference
+            try:
+                # Count 1 for this simple flow
+                self._save_command_sample(capability_message, label=f"CAPABILITY_REQ_{node_name}_1")
+            except Exception:
+                pass
                 
             # Load and send the response
             print(f"\n--- Sending Response for {node_name} ---")

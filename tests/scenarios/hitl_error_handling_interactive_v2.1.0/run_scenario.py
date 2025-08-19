@@ -351,6 +351,12 @@ class InteractiveTestRunner:
                 call_count = node_call_counts.get(node_name, 0) + 1
                 node_call_counts[node_name] = call_count
 
+                # Save the received capability request for reference
+                try:
+                    self._save_command_sample(capability_message, label=f"CAPABILITY_REQ_{node_name}_{call_count}")
+                except Exception:
+                    pass
+
                 # Find the corresponding response file, trying numbered versions first
                 response_file = self.scenario_path / f"{node_name}_{call_count}.json"
                 if not response_file.exists():

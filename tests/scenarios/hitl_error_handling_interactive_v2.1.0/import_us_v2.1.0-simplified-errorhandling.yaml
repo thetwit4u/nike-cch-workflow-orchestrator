@@ -58,14 +58,14 @@ nodes:
     input_keys:
       - current_map_item
     request_output_keys:
-      - submission_status
+      - submissionStatus
     on_response: Check_Submit_Response
     on_failure: Handle_Error # This should be a branch-specific error handler
 
   Check_Submit_Response:
     type: condition
     title: Check Submit Response
-    condition_on_key: submission_status.status
+    condition_on_key: submissionStatus
     branches:
       SUCCESS: Wait_For_Custom_Status_Update
       ERROR: Handle_Error # This should be a branch-specific error handler

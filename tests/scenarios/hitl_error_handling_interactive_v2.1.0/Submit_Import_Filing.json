@@ -1,8 +1,6 @@
 {
     "status": "SUCCESS",
     "data": {
-        "submission_status": {
-            "status": "SUCCESS"
-        }
+        "submissionStatus": "SUCCESS"
     }
 }
