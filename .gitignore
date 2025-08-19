@@ -46,3 +46,4 @@ workflow-orchestrator/cdk/cdk-outputs.json
 JIRA.md
 PLANNING.md
 state_refactoring.md
+/tests/output/
