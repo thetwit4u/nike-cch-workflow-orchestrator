@@ -13,7 +13,8 @@ import {
     aws_iam as iam,
     aws_scheduler as scheduler,
     aws_ecr as ecr,
-    aws_sns as sns
+    aws_sns as sns,
+    aws_lambda_event_sources as lambdaEventSources,
 } from 'aws-cdk-lib';
 import * as subs from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as python from '@aws-cdk/aws-lambda-python-alpha';
@@ -57,6 +58,8 @@ export class CchWorkflowOrchestratorStack extends Stack {
 
         // --- SNS System Events Topic (Conditional) ---
         const systemEventsTopicArn = process.env.SNS_TOPIC_CCH_EVENTS_ARN;
+
+        const asnDeadLetterQueueProcessorLambda = lambda.Function.fromFunctionName(this, 'AsnDeadLetterQueueProcessorLambda', `cch-dead-queue-processor-lambda-${process.env.ENVIRONMENT}`);
 
         let systemEventsTopic: sns.ITopic;
         let systemEventsTestListenerQueue: sqs.Queue | undefined;
@@ -119,6 +122,12 @@ export class CchWorkflowOrchestratorStack extends Stack {
             queueName: `${mainPrefix}-command-dlq-${env}${ownerSuffix}`,
             retentionPeriod: Duration.days(14),
         });
+
+        asnDeadLetterQueueProcessorLambda.addEventSource(
+            new lambdaEventSources.SqsEventSource(deadLetterQueue, {
+                batchSize: 10
+            })
+        );
 
         const commandQueue = new sqs.Queue(this, 'OrchestratorCommandQueue', {
             queueName: `${mainPrefix}-command-queue-${env}${ownerSuffix}`,
