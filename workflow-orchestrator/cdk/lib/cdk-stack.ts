@@ -120,6 +120,7 @@ export class CchWorkflowOrchestratorStack extends Stack {
         // --- SQS Queues ---
         const deadLetterQueue = new sqs.Queue(this, 'OrchestratorCommandDLQ', {
             queueName: `${mainPrefix}-command-dlq-${env}${ownerSuffix}`,
+            visibilityTimeout: Duration.seconds(300),
             retentionPeriod: Duration.days(14),
         });
 
