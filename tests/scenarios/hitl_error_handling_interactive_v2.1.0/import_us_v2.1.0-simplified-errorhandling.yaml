@@ -101,7 +101,7 @@ nodes:
   Clear_Enrichment_Status:
     type: set_state
     title: Clear Enrichment Status
-    static_values:
+    static_outputs:
       status: null
     on_success: Enrich_Consignment
 
