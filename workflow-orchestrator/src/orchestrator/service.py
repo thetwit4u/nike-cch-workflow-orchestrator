@@ -266,9 +266,19 @@ class OrchestratorService:
                         # Merge payload into current_map_item and persist to context map for continuity
                         existing_item = (current_state.values.get('data', {}) or {}).get('current_map_item') or {}
                         merged_item = self._deep_merge_dict(existing_item, payload or {})
-                        # Persist to both data and context maps
+                        # Persist to both data and context maps on the active thread
                         graph.update_state(config, {"data": {"current_map_item": merged_item}})
                         graph.update_state(config, {"context": {"map_items_by_key": {branch_key: merged_item}}})
+                        # Also persist to the parent thread's context map so subsequent responses can restore state
+                        try:
+                            if 'parent_config' in locals() and isinstance(parent_config, dict):
+                                graph.update_state(parent_config, {"context": {"map_items_by_key": {branch_key: merged_item}}})
+                        except Exception:
+                            # Non-fatal; continue even if parent update fails
+                            pass
+
+                    # Re-read current state after updates so event publication reflects merged data
+                    current_state = graph.get_state(config)
 
                     # Prepare publication if applicable
                     current_step_payload = {

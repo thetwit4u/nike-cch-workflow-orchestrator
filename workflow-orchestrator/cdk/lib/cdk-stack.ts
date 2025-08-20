@@ -58,7 +58,8 @@ export class CchWorkflowOrchestratorStack extends Stack {
 
         // --- SNS System Events Topic (Conditional) ---
         const systemEventsTopicArn = process.env.SNS_TOPIC_CCH_EVENTS_ARN;
-        const asnDlqProcessorFunctionName = process.env.ASN_DLQ_PROCESSOR_FUNCTION_NAME || '';
+
+        const asnDeadLetterQueueProcessorLambda = lambda.Function.fromFunctionName(this, 'AsnDeadLetterQueueProcessorLambda', `cch-dead-queue-processor-lambda-${process.env.ENVIRONMENT}`);
 
         let systemEventsTopic: sns.ITopic;
         let systemEventsTestListenerQueue: sqs.Queue | undefined;
@@ -123,6 +124,11 @@ export class CchWorkflowOrchestratorStack extends Stack {
             retentionPeriod: Duration.days(14),
         });
 
+        asnDeadLetterQueueProcessorLambda.addEventSource(
+            new lambdaEventSources.SqsEventSource(deadLetterQueue, {
+                batchSize: 10
+            })
+        );
 
         const commandQueue = new sqs.Queue(this, 'OrchestratorCommandQueue', {
             queueName: `${mainPrefix}-command-queue-${env}${ownerSuffix}`,
