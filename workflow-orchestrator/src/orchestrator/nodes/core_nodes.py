@@ -18,6 +18,13 @@ def pass_through_action(state: WorkflowState) -> WorkflowState:
     """A no-op action for nodes that only perform routing."""
     return state
 
+def handle_map_fork(state: WorkflowState, node_name: str) -> WorkflowState:
+    """
+    A node handler for the 'map_fork' node that adds logging before the fork.
+    """
+    logger.info(f"Executing 'map_fork' node '{node_name}'. The next step should be the map_resolver.")
+    return state
+
 def handle_join(state: WorkflowState, destination: str = None, node_name: str = None) -> WorkflowState:
     """
     Node handler for the 'join' node.
@@ -31,6 +38,17 @@ def handle_join(state: WorkflowState, destination: str = None, node_name: str = 
     """
     logger.info("Executing join node")
     try:
+        # Barrier: if this join expects specific branches, wait until all are completed
+        join_expectations = state.get("context", {}).get("join_expected_by_join", {}) or {}
+        expected_keys = join_expectations.get(node_name) or []
+        if expected_keys:
+            completed_map = state.get("context", {}).get("completed_branch_keys", {}) or {}
+            completed_keys = {key for key, done in completed_map.items() if done}
+            remaining = [k for k in expected_keys if k not in completed_keys]
+            if remaining:
+                logger.info(f"Join '{node_name}' waiting for remaining branches: {remaining}")
+                return interrupt("Waiting for branches to complete")
+
         if destination:
             # This is a reduce operation for a map_fork
             logger.info(f"Performing reduce operation for map_fork into key '{destination}'.")
@@ -63,6 +81,22 @@ def handle_join(state: WorkflowState, destination: str = None, node_name: str = 
 
     return state
 
+def handle_end_branch(state: WorkflowState, node_name: str) -> WorkflowState:
+    """
+    Marks the current branch as completed so the join barrier can proceed
+    when all branches have finished.
+    """
+    logger.info(f"Executing end_branch node '{node_name}'. Marking branch as completed.")
+    branch_key = state.get("context", {}).get("branch_key")
+    if not branch_key:
+        logger.warning("No 'branch_key' found in context while ending branch.")
+        return state
+
+    context = state.setdefault("context", {})
+    completed_map = context.setdefault("completed_branch_keys", {})
+    completed_map[branch_key] = True
+    return state
+
 def handle_register_branch(state: WorkflowState, config: RunnableConfig, checkpointer: BaseCheckpointSaver, node_name: str) -> WorkflowState:
     """
     An internal-only node that registers a parallel branch's checkpoint with the parent.
@@ -78,23 +112,28 @@ def handle_register_branch(state: WorkflowState, config: RunnableConfig, checkpo
 
         logger.info(f"Registering branch. Key: '{branch_key}', Thread ID: '{child_thread_id}'")
 
-        # Get the parent's checkpoint
-        parent_config = {"configurable": {"thread_id": parent_thread_id}}
-        parent_checkpoint = checkpointer.get(parent_config)
+        # Get the parent's checkpoint to get the checkpoint_id
+        parent_config_for_get = {"configurable": {"thread_id": parent_thread_id}}
+        parent_checkpoint_tuple = checkpointer.get_tuple(parent_config_for_get)
 
-        if not parent_checkpoint:
-            # This can happen in rare race conditions. We will let the next run resolve it.
+        if not parent_checkpoint_tuple:
             logger.warning(f"Could not find parent checkpoint for thread '{parent_thread_id}'. Skipping branch registration.")
             return state
 
-        # Update the parent's checkpoint with the new branch info
-        branch_checkpoints = parent_checkpoint["channel_values"].get("branch_checkpoints", {})
-        branch_checkpoints[branch_key] = child_thread_id
-        
-        update = {"branch_checkpoints": branch_checkpoints}
-        
-        # Write the updated checkpoint back
-        checkpointer.put(parent_config, {"channel_values": update}, None)
+        parent_checkpoint_id = parent_checkpoint_tuple.checkpoint["id"]
+
+        # Use put_writes for atomic updates on the parent checkpoint
+        parent_config_for_put = {"configurable": {"thread_id": parent_thread_id, "checkpoint_id": parent_checkpoint_id}}
+        writes = []
+        # Map the business branch key to this task's thread id (may equal parent in this model)
+        writes.append((f"branch_checkpoints.{branch_key}", child_thread_id))
+        # Persist the branch's current map item so responses can restore context without per-branch threads
+        current_map_item = state.get("data", {}).get("current_map_item")
+        if current_map_item is not None:
+            writes.append((f"map_items_by_key.{branch_key}", current_map_item))
+            # Also persist under context.map_items_by_key to make it visible via get_state
+            writes.append((f"context.map_items_by_key.{branch_key}", current_map_item))
+        checkpointer.put_writes(parent_config_for_put, writes, child_thread_id)
 
     except Exception as e:
         logger.exception("Error in handle_register_branch")

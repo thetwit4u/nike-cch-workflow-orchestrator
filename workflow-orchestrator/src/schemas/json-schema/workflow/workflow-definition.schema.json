@@ -47,7 +47,7 @@
         "on_failure": { "type": "string", "description": "Node to transition to on failure." },
         "type": {
           "type": "string",
-          "enum": ["sync_call", "async_request", "condition", "fork", "join", "end_branch", "end", "library_call", "scheduled_request", "map_fork", "event_wait", "log_error"]
+          "enum": ["sync_call", "async_request", "condition", "fork", "join", "end_branch", "end", "library_call", "scheduled_request", "map_fork", "event_wait", "log_error", "set_state"]
         }
       },
       "required": ["type"],
@@ -63,7 +63,8 @@
         { "$ref": "#/definitions/scheduledRequestNode" },
         { "$ref": "#/definitions/mapForkNode" },
         { "$ref": "#/definitions/eventWaitNode" },
-        { "$ref": "#/definitions/logErrorNode" }
+        { "$ref": "#/definitions/logErrorNode" },
+        { "$ref": "#/definitions/setStateNode" }
       ]
     },
     "baseCallNode": {
@@ -170,6 +171,14 @@
     },
     "endBranchNode": { "type": "object", "properties": { "type": { "const": "end_branch" } } },
     "endNode": { "type": "object", "properties": { "type": { "const": "end" } } },
+    "setStateNode": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "set_state" },
+        "static_outputs": { "type": "object", "additionalProperties": true },
+        "on_success": { "type": "string", "description": "Node to transition to after setting state." }
+      }
+    },
     "scheduleParameters": {
       "type": "object",
       "properties": {

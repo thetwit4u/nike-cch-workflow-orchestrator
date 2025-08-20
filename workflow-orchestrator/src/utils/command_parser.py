@@ -123,12 +123,29 @@ class CommandParser:
             return {}
         
         extracted = {}
+        data_ref = self.state.get("data", {})
+        context_ref = self.state.get("context", {})
         for key in key_list:
-            if key in self.state.get("data", {}):
-                extracted[key] = self.state["data"][key]
-            elif key in self.state.get("context", {}):
-                extracted[key] = self.state["context"][key]
+            value = None
+            if key in data_ref:
+                value = data_ref[key]
+            elif key in context_ref:
+                value = context_ref[key]
             else:
                 logger.warning(f"Key '{key}' not found in state data or context during extraction.")
+                continue
+
+            # Special handling: flatten the map item so it is not nested under 'current_map_item'
+            if key == "current_map_item" and isinstance(value, dict):
+                for sub_key, sub_val in value.items():
+                    if sub_key in extracted:
+                        logger.warning(
+                            "Flattening collision for key '%s' while expanding current_map_item; keeping existing value.",
+                            sub_key,
+                        )
+                        continue
+                    extracted[sub_key] = sub_val
+            else:
+                extracted[key] = value
         
         return extracted 

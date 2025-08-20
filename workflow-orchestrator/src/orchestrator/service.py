@@ -36,7 +36,7 @@ class OrchestratorService:
         self.s3_client = S3Client()
         self.compiled_graphs: Dict[str, CompiledGraph] = {}
         self.graph_cache: Dict[str, CompiledGraph] = {}
-        logger.info("OrchestratorService initialized.")
+        logger.info("OrchestratorService initialized. (v2)")
 
     @classmethod
     def get_instance(cls):
@@ -90,7 +90,7 @@ class OrchestratorService:
         merged = left.copy()
         for key, value in right.items():
             if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
-                merged[key] = _deep_merge_dict(merged[key], value)
+                merged[key] = OrchestratorService._deep_merge_dict(merged[key], value)
             else:
                 merged[key] = value
         return merged
@@ -139,18 +139,99 @@ class OrchestratorService:
 
                     final_state = graph.invoke(initial_state_patch, config)
                     adapter.info(f"Successfully ran workflow. Final state: {final_state}")
-                    adapter.info(f"Successfully ran workflow. Final state: {final_state}")
+
+                    # Note: Do NOT drain-run at initial start. Doing so while paused at
+                    # a non-fork async_request can duplicate outbound requests.
                 else:
                     # Duplicate event handling logic remains the same
                     adapter.info("Duplicate trigger event received for in-progress workflow. Ignoring.")
                     return
 
             elif command_type in ['ASYNC_RESP', 'EVENT_WAIT_RESP']:
+                routing_hint = command_obj.get("routingHint")
+                branch_key = routing_hint.get("branchKey") if routing_hint else None
+                is_branch_response = bool(branch_key)
+
+                if branch_key:
+                    # This response targets a parallel branch; restore parent thread and context.
+                    parent_config = {"configurable": {"thread_id": instance_id}}
+                    parent_checkpoint = self.state_saver.get(parent_config)
+                    if not parent_checkpoint:
+                        adapter.error("Parent checkpoint not found; cannot resume branch.")
+                        return
+
+                    channel_values = parent_checkpoint.get("channel_values", {})
+                    # If a dedicated branch thread exists, use it. Otherwise, stay on parent.
+                    thread_id = None
+                    for key, value in channel_values.items():
+                        if key == f"branch_checkpoints.{branch_key}":
+                            thread_id = value
+                            break
+                    if thread_id:
+                        config = {"configurable": {"thread_id": thread_id}}
+                    else:
+                        # Fallback: no separate branch thread. Use parent and restore current_map_item from persisted map.
+                        map_item = channel_values.get(f"map_items_by_key.{branch_key}")
+                        if map_item is None:
+                            # Try nested context map persisted during drain-run
+                            parent_state = graph.get_state(parent_config)
+                            nested_map = parent_state.values.get('context', {}).get('map_items_by_key', {}) or {}
+                            map_item = nested_map.get(branch_key)
+                        if map_item is None:
+                            adapter.error(f"Could not find thread_id or map item for branch key '{branch_key}'.")
+                            return
+                        config = {"configurable": {"thread_id": instance_id}}
+                        graph.update_state(config, {"data": {"current_map_item": map_item}})
+                else:
+                    # This response is for the main thread.
+                    config = {"configurable": {"thread_id": instance_id}}
+
                 # Universal logic for resuming from a pause
-                adapter.info(f"Processing {command_type} for main thread '{instance_id}'.")
-                    
+                adapter.info(f"Processing {command_type} for thread '{config['configurable']['thread_id']}'.")
+                
                 current_state = graph.get_state(config)
-                interrupted_node = self._get_interrupted_node(current_state)
+
+                # Idempotency for ASYNC_RESP: for branch responses, we proceed even if parent thread isn't paused
+                if command_type == 'ASYNC_RESP':
+                    if not is_branch_response:
+                        # If the graph is not currently paused on this thread, ignore late/duplicate responses
+                        if not current_state.next:
+                            adapter.info("Not paused on this thread; ignoring ASYNC_RESP as idempotent.")
+                            return
+                    dedupe_key = command_obj.get('in_reply_to') or command_obj.get('id')
+                    processed = current_state.values.get('context', {}).get('processed_async_replies', {}) or {}
+                    if processed.get(dedupe_key):
+                        adapter.info(f"ASYNC_RESP with key '{dedupe_key}' already processed; ignoring.")
+                        return
+                    # Mark as processed immediately to protect from rapid duplicates
+                    graph.update_state(config, {"context": {"processed_async_replies": {dedupe_key: True}}})
+
+                # Determine interrupted node.
+                interrupted_node = None
+                if is_branch_response:
+                    if command_type == 'EVENT_WAIT_RESP':
+                        # Prefer the currently paused event_wait node if present
+                        current_node_name = current_state.values.get('context', {}).get('current_node')
+                        if current_node_name:
+                            maybe_node_def = definition.get("nodes", {}).get(current_node_name, {})
+                            if maybe_node_def.get("type") == "event_wait":
+                                interrupted_node = current_node_name
+
+                        # If not found, find an event_wait node for branch updates (one using 'on_event')
+                        if not interrupted_node:
+                            for node_name, node_def in definition.get("nodes", {}).items():
+                                if node_def.get("type") == "event_wait" and node_def.get("on_event"):
+                                    interrupted_node = node_name
+                                    break
+                    else:
+                        # ASYNC_RESP for a branch: find the async node that consumes current_map_item
+                        for node_name, node_def in definition.get("nodes", {}).items():
+                            if node_def.get("type") == "async_request" and 'current_map_item' in (node_def.get('input_keys') or []):
+                                interrupted_node = node_name
+                                break
+
+                if not interrupted_node:
+                    interrupted_node = self._get_interrupted_node(current_state)
 
                 if not interrupted_node:
                     adapter.error(f"Could not determine interrupted node from state. Cannot proceed with {command_type}.")
@@ -164,7 +245,11 @@ class OrchestratorService:
                 if command_type == 'ASYNC_RESP':
                     transition_node = node_def.get("on_response")
                 else: # EVENT_WAIT_RESP
-                    transition_node = node_def.get("on_success")
+                    # Support both 'on_event' and 'on_success' for event_wait nodes
+                    if node_def.get("type") == "event_wait":
+                        transition_node = node_def.get("on_event") or node_def.get("on_success")
+                    else:
+                        transition_node = node_def.get("on_success")
 
                 if not transition_node:
                     adapter.error(f"Node '{interrupted_node}' is missing transition target for {command_type}.")
@@ -203,15 +288,94 @@ class OrchestratorService:
                 final_state = graph.invoke(None, config)
                 adapter.info(f"Successfully resumed and ran workflow to completion. Final state: {final_state}")
 
-               # --- Publish AsyncRequestEnded Event ---
-
-
+                # If we are transitioning into a map_fork, attempt a drain-run ONLY if not currently interrupted.
+                transitioned_node_def = definition.get("nodes", {}).get(transition_node, {})
+                if transitioned_node_def.get("type") == "map_fork":
+                    try:
+                        self._drain_parallel_fanout(graph, config, adapter, definition, transition_node)
+                    except Exception as drain_err:
+                        adapter.warning(f"Drain-run after map_fork transition encountered an issue: {drain_err}")
 
             else:
                 adapter.warning(f"Unknown command type '{command_type}' cannot be processed.")
 
         except Exception as e:
             adapter.error(f"Error processing command for workflow '{instance_id}': {e}", exc_info=True)
+
+    def _drain_parallel_fanout(self, graph, config: dict, adapter: logging.LoggerAdapter, definition: Dict[str, Any], map_fork_node_name: str):
+        """
+        Dispatch async requests for each map_fork branch explicitly to avoid
+        losing parallelism when running under a single-threaded Lambda invoke.
+        Uses the workflow definition to build messages identical to the
+        branch entry node (async_request) and marks branches as processed to
+        ensure idempotency.
+        """
+        state_values = graph.get_state(config).values
+        data = state_values.get("data", {})
+        context = state_values.get("context", {})
+
+        fork_def = definition.get("nodes", {}).get(map_fork_node_name, {})
+        input_list_key = fork_def.get("input_list_key")
+        branch_key_prop = fork_def.get("branch_key")
+        entry_node_name = fork_def.get("branch_entry_node")
+        entry_node_def = definition.get("nodes", {}).get(entry_node_name, {})
+
+        if not all([input_list_key, branch_key_prop, entry_node_name, entry_node_def]):
+            adapter.error("map_fork configuration incomplete; cannot drain-run fanout.")
+            return
+
+        items = data.get(input_list_key) or []
+        if not isinstance(items, list):
+            adapter.error(f"map_fork input_list_key '{input_list_key}' is not a list; aborting drain-run.")
+            return
+
+        processed = (context.get("processed_branch_requests", {}).get(map_fork_node_name)) or {}
+
+        from utils.command_parser import CommandParser
+        from clients.queue_client import QueueClient
+
+        # If one branch request already executed during this invoke, it will be the
+        # current_map_item in data; persist it and skip re-dispatching for that branch to avoid duplicates.
+        in_flight_branch_id = (data.get('current_map_item') or {}).get('filingPackId')
+        in_flight_item = data.get('current_map_item') if in_flight_branch_id else None
+
+        # Persist the in-flight branch item if it exists so later responses can restore context
+        if in_flight_item and in_flight_branch_id:
+            graph.update_state(config, {"context": {"map_items_by_key": {in_flight_branch_id: in_flight_item}}})
+
+        for item in items:
+            branch_key = item.get(branch_key_prop)
+            if not branch_key:
+                continue
+            if processed.get(branch_key):
+                adapter.info(f"Branch '{branch_key}' already dispatched; skipping.")
+                continue
+            if in_flight_branch_id and branch_key == in_flight_branch_id:
+                adapter.info(f"Branch '{branch_key}' already in-flight from main execution; skipping drain-run dispatch.")
+                continue
+
+            # Persist under context.map_items_by_key so response routing can restore context
+            graph.update_state(config, {"context": {"map_items_by_key": {branch_key: item}}})
+
+            temp_state = {
+                "context": {**context, "branch_key": branch_key},
+                "data": {**data, "current_map_item": item},
+            }
+            parser = CommandParser(temp_state, entry_node_def)
+            full_command_message = parser.create_command_message(command_type="ASYNC_REQ")
+
+            capability_id = entry_node_def.get("capability_id", "")
+            service_name = capability_id.split('#')[0].upper()
+            capability_key = f"CCH_CAPABILITY_{service_name}"
+            queue_url = os.environ.get(capability_key) or os.environ.get('FALLBACK_CAPABILITY_QUEUE_URL')
+            if not queue_url:
+                adapter.error(f"No capability queue configured for service '{service_name}'.")
+                continue
+
+            QueueClient().send_message(queue_url, full_command_message)
+            adapter.info(f"Drain-run dispatched async request for branch '{branch_key}' to '{queue_url}'.")
+
+            graph.update_state(config, {"context": {"processed_branch_requests": {map_fork_node_name: {branch_key: True}}}})
 
     def _get_interrupted_node(self, current_state: Any) -> str | None:
         """Helper to find the name of the node that was interrupted."""
