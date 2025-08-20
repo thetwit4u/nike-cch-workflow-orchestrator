@@ -7,6 +7,7 @@ from langgraph.checkpoint.base import (
 from langchain_core.runnables import RunnableConfig
 
 from orchestrator.event_publisher import EventPublisher
+from orchestrator.next_steps import compute_next_steps
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +80,135 @@ class EventPublishingCheckpointer(BaseCheckpointSaver):
                 
                 logger.info(f"Publishing event for node: {current_node_name} (Type: {current_node_type}, Status: {status}) -> Next: {[n['name'] for n in next_steps_payload]}")
                 self.event_publisher.publish_event(state, current_step_payload, next_steps_payload, status)
+            elif current_node_type == "event_wait":
+                status = "Started:EventWait"
+
+                # Determine the traversal start from on_event if present, else on_success
+                start_from = current_node_def.get("on_event") or current_node_def.get("on_success")
+
+                current_step_payload = {
+                    "name": current_node_name,
+                    "title": current_node_def.get("title", ""),
+                    "type": current_node_type,
+                }
+                next_steps_payload = compute_next_steps(start_from, self.workflow_definition) if start_from else []
+
+                logger.info(
+                    f"Publishing event for node: {current_node_name} (Type: {current_node_type}, Status: {status})"
+                )
+                self.event_publisher.publish_event(state, current_step_payload, next_steps_payload, status)
+            elif current_node_type == "map_fork":
+                status = "Started:MapFork"
+
+                current_step_payload = {
+                    "name": current_node_name,
+                    "title": current_node_def.get("title", ""),
+                    "type": current_node_type,
+                }
+                # Compute from the map_fork node itself to include structural next steps
+                next_steps_payload = compute_next_steps(current_node_name, self.workflow_definition)
+
+                logger.info(
+                    f"Publishing event for node: {current_node_name} (Type: {current_node_type}, Status: {status})"
+                )
+                self.event_publisher.publish_event(state, current_step_payload, next_steps_payload, status)
+            elif current_node_type == "end_branch":
+                status = "Ended:Branch"
+
+                # Try to resolve join(s). If exactly one join exists, traverse from it; else include joins directly.
+                nodes_dict = (self.workflow_definition.get("nodes", {}) or {})
+                join_nodes = [
+                    (n, nd) for n, nd in nodes_dict.items() if nd.get("type") == "join"
+                ]
+
+                current_step_payload = {
+                    "name": current_node_name,
+                    "title": current_node_def.get("title", ""),
+                    "type": current_node_type,
+                }
+
+                if len(join_nodes) == 1:
+                    sole_join_name = join_nodes[0][0]
+                    next_steps_payload = compute_next_steps(sole_join_name, self.workflow_definition)
+                else:
+                    # Narrow to joins whose join_branches contain a map_fork that can reach this end_branch
+                    candidate_joins: list[tuple[str, dict]] = []
+                    for join_name, join_def in join_nodes:
+                        join_branches = join_def.get("join_branches") or []
+                        if not isinstance(join_branches, list) or not join_branches:
+                            continue
+                        for map_fork_name in join_branches:
+                            map_fork_def = nodes_dict.get(map_fork_name, {})
+                            if map_fork_def.get("type") != "map_fork":
+                                continue
+                            entry = map_fork_def.get("branch_entry_node")
+                            if entry and self._can_reach(entry, current_node_name):
+                                candidate_joins.append((join_name, join_def))
+                                break
+
+                    # Deduplicate while preserving order
+                    seen = set()
+                    filtered = []
+                    for n, nd in candidate_joins:
+                        if n not in seen:
+                            seen.add(n)
+                            filtered.append((n, nd))
+
+                    if filtered:
+                        next_steps_payload = [
+                            {"name": n, "title": nd.get("title", ""), "type": nd.get("type", "")}
+                            for n, nd in filtered
+                        ]
+                    else:
+                        # Fallback to all joins when no candidates matched
+                        next_steps_payload = [
+                            {"name": n, "title": nd.get("title", ""), "type": nd.get("type", "")}
+                            for n, nd in join_nodes
+                        ]
+
+                logger.info(
+                    f"Publishing event for node: {current_node_name} (Type: {current_node_type}, Status: {status})"
+                )
+                self.event_publisher.publish_event(state, current_step_payload, next_steps_payload, status)
 
         except Exception as e:
             logger.error(f"Error publishing event after saving checkpoint: {e}", exc_info=True)
 
         return result
+
+    def _can_reach(self, start_node_name: str, target_node_name: str) -> bool:
+        """Check if target_node_name is reachable from start_node_name via success-like edges."""
+        nodes = (self.workflow_definition.get("nodes", {}) or {})
+        visited: set[str] = set()
+        queue: list[str] = [start_node_name]
+        while queue:
+            node_name = queue.pop(0)
+            if node_name in visited:
+                continue
+            visited.add(node_name)
+            if node_name == target_node_name:
+                return True
+            node_def = nodes.get(node_name, {})
+            node_type = node_def.get("type")
+            if node_type == "condition":
+                for dest in (node_def.get("branches", {}) or {}).values():
+                    if dest:
+                        queue.append(dest)
+                continue
+            if node_type == "event_wait":
+                dest = node_def.get("on_event") or node_def.get("on_success")
+                if dest:
+                    queue.append(dest)
+                continue
+            if node_type == "map_fork":
+                branch_entry = node_def.get("branch_entry_node")
+                if branch_entry:
+                    queue.append(branch_entry)
+                continue
+            successor = node_def.get("on_success") or node_def.get("on_response")
+            if successor:
+                queue.append(successor)
+        return False
 
     def put_writes(self, config: RunnableConfig, writes: List[Tuple[str, Any]], task_id: str) -> None:
         return self.saver.put_writes(config, writes, task_id)

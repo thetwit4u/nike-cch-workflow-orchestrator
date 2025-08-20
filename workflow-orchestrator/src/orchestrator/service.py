@@ -9,6 +9,7 @@ from lib.langgraph_checkpoint_dynamodb.langgraph_checkpoint_dynamodb.config impo
 from orchestrator.graph_builder import GraphBuilder
 from orchestrator.event_publishing_checkpointer import EventPublishingCheckpointer
 from orchestrator.event_publisher import EventPublisher
+from orchestrator.next_steps import compute_next_steps
 from utils.logging_adapter import WorkflowIdAdapter
 from clients.s3_client import S3Client
 from langgraph.graph.graph import CompiledGraph
@@ -259,30 +260,41 @@ class OrchestratorService:
                     
 
 
-                if command_type == 'ASYNC_RESP':
+                if command_type in ('ASYNC_RESP', 'EVENT_WAIT_RESP'):
+                    # If this is a branch response, merge payload into the map item (both data.current_map_item and context map)
+                    if is_branch_response and branch_key:
+                        # Merge payload into current_map_item and persist to context map for continuity
+                        existing_item = (current_state.values.get('data', {}) or {}).get('current_map_item') or {}
+                        merged_item = self._deep_merge_dict(existing_item, payload or {})
+                        # Persist to both data and context maps
+                        graph.update_state(config, {"data": {"current_map_item": merged_item}})
+                        graph.update_state(config, {"context": {"map_items_by_key": {branch_key: merged_item}}})
+
+                    # Prepare publication if applicable
                     current_step_payload = {
                         "name": interrupted_node,
                         "title": node_def.get("title", ""),
                         "type": node_def.get("type", ""),
                     }
-                    next_steps_payload = self._find_next_significant_nodes(transition_node, definition)
-                    # Create a temporary state for the event publisher
+                    next_steps_payload = compute_next_steps(transition_node, definition)
                     event_state = current_state.values.copy()
-                    event_state['data'] = self._deep_merge_dict(event_state.get('data', {}), payload)
+                    # Reflect merged data and status in event publication
+                    event_state['data'] = self._deep_merge_dict(event_state.get('data', {}), payload or {})
                     event_state['data']['status'] = command_status
 
+                    status_label = "Ended:AsyncRequest" if command_type == 'ASYNC_RESP' else "Ended:EventWait"
                     self.event_publisher.publish_event(
                         state=event_state,
                         current_step=current_step_payload,
                         next_steps=next_steps_payload,
-                        status="Ended:AsyncRequest"
+                        status=status_label
                     )
                 # --- ---
 
 
                 # Merge the command's status and payload into the state's data channel
                 # This makes the status available for condition nodes
-                update_data = payload.copy()
+                update_data = (payload or {}).copy()
                 update_data['status'] = command_status
                 graph.update_state(config, {"data": update_data}, as_node=transition_node)
                 final_state = graph.invoke(None, config)
@@ -390,38 +402,4 @@ class OrchestratorService:
                     return key.replace("branch:to:", "")
         return None
 
-    def _find_next_significant_nodes(self, start_node_name: str, workflow_definition: Dict[str, Any]) -> list[Dict[str, Any]]:
-        """
-        Traverses the workflow definition from a starting node to find the next
-        significant nodes (async_request or end).
-        """
-        significant_nodes = []
-        nodes_to_visit = [start_node_name]
-        visited_nodes = set()
-
-        while nodes_to_visit:
-            current_node_name = nodes_to_visit.pop(0)
-            if current_node_name in visited_nodes:
-                continue
-            visited_nodes.add(current_node_name)
-
-            node_def = workflow_definition.get("nodes", {}).get(current_node_name, {})
-            node_type = node_def.get("type")
-
-            if node_type in ["async_request", "end"]:
-                significant_nodes.append({
-                    "name": current_node_name,
-                    "title": node_def.get("title", ""),
-                    "type": node_type,
-                })
-            else:
-                # Follow the success path for other nodes
-                next_node = node_def.get("on_success") or node_def.get("on_response")
-                if next_node:
-                    nodes_to_visit.append(next_node)
-                # Handle conditional branches
-                elif node_type == "condition":
-                    for branch_node in node_def.get("branches", {}).values():
-                        nodes_to_visit.append(branch_node)
-
-        return significant_nodes
+    

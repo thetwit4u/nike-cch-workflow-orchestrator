@@ -5,13 +5,14 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 
 from clients.sns_client import SnsClient
+from orchestrator.context_merge import merge_branch_context
 from orchestrator.state import WorkflowState
 
 logger = logging.getLogger(__name__)
 
 class EventPublisher:
     """
-    A class to handle the construction and publishing of CHHSystemEvent messages.
+    A class to handle the construction and publishing of CchSystemEvent messages.
     """
     def __init__(self):
         self.sns_client = SnsClient()
@@ -43,7 +44,7 @@ class EventPublisher:
         data = state.get("data", {})
         message_group_id = data.get("consignmentId")
         if not message_group_id:
-            logger.warning(f"consignmentIdis missing from context. Cannot publish event.")
+            logger.warning(f"consignmentId is missing from data. Cannot publish event.")
             return
 
         event = self._build_event(state, current_step, next_steps, status)
@@ -71,8 +72,22 @@ class EventPublisher:
             event_type = "AsyncRequestStarted"
         elif status == "Ended:AsyncRequest":
             event_type = "AsyncRequestEnded"
+        elif status == "Started:EventWait":
+            event_type = "EventWaitStarted"
+        elif status == "Ended:EventWait":
+            event_type = "EventWaitEnded"
+        elif status == "Started:MapFork":
+            event_type = "MapForkStarted"
+        elif status == "Ended:Branch":
+            event_type = "BranchEnded"
 
-        business_context = {k: v for k, v in state.get("data", {}).items() if not k.startswith('_')}
+        raw_data = state.get("data", {}) or {}
+        # Fold current_map_item into the business context and exclude internals
+        folded = merge_branch_context(raw_data, raw_data.get("current_map_item") or {})
+        business_context = {
+            k: v for k, v in folded.items()
+            if not (isinstance(k, str) and (k.startswith('_') or k == 'current_map_item'))
+        }
         messages = business_context.pop("messages", [])
 
         return {

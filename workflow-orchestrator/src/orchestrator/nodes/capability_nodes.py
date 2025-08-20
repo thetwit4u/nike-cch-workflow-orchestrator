@@ -18,6 +18,7 @@ import dateutil.parser
 from langgraph.types import Interrupt, interrupt
 
 from orchestrator.event_publisher import EventPublisher
+from orchestrator.next_steps import compute_next_steps
 from orchestrator.state import WorkflowState
 from .library_nodes import _get_required_param
 
@@ -31,41 +32,6 @@ iam_client = boto3.client('iam')
 
 # Environment variables for queue URLs, set by the CDK
 
-def _find_next_significant_nodes(start_node_name: str, workflow_definition: Dict[str, Any]) -> list[Dict[str, Any]]:
-    """
-    Traverses the workflow definition from a starting node to find the next
-    significant nodes (async_request or end).
-    """
-    significant_nodes = []
-    nodes_to_visit = [start_node_name]
-    visited_nodes = set()
-
-    while nodes_to_visit:
-        current_node_name = nodes_to_visit.pop(0)
-        if current_node_name in visited_nodes:
-            continue
-        visited_nodes.add(current_node_name)
-
-        node_def = workflow_definition.get("nodes", {}).get(current_node_name, {})
-        node_type = node_def.get("type")
-
-        if node_type in ["async_request", "end"]:
-            significant_nodes.append({
-                "name": current_node_name,
-                "title": node_def.get("title", ""),
-                "type": node_type,
-            })
-        else:
-            # Follow the success path for other nodes
-            next_node = node_def.get("on_success") or node_def.get("on_response")
-            if next_node:
-                nodes_to_visit.append(next_node)
-            # Handle conditional branches
-            elif node_type == "condition":
-                for branch_node in node_def.get("branches", {}).values():
-                    nodes_to_visit.append(branch_node)
-
-    return significant_nodes
 
 
 def _base_action(state: Dict[str, Any], config: Dict[str, Any], node_config: Dict[str, Any], action_logic_fn) -> Dict[str, Any]:
@@ -127,7 +93,7 @@ def handle_async_request(state: WorkflowState, node_config: dict, node_name: str
         }
         # In this context, the next step is always the on_response node
         next_node_name = node_config.get("on_response")
-        next_steps_payload = _find_next_significant_nodes(next_node_name, workflow_definition)
+        next_steps_payload = compute_next_steps(next_node_name, workflow_definition)
 
         event_publisher.publish_event(
             state=state,
