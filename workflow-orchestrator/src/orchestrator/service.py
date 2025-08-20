@@ -264,7 +264,9 @@ class OrchestratorService:
                     # If this is a branch response, merge payload into the map item (both data.current_map_item and context map)
                     if is_branch_response and branch_key:
                         # Merge payload into current_map_item and persist to context map for continuity
-                        existing_item = (current_state.values.get('data', {}) or {}).get('current_map_item') or {}
+                        existing_item = (current_state.values.get('data', {}) or {}).get('current_map_item')
+                        if not existing_item:
+                            existing_item = (current_state.values.get('context', {}).get('map_items_by_key', {}) or {}).get(branch_key) or {}
                         merged_item = self._deep_merge_dict(existing_item, payload or {})
                         # Persist to both data and context maps on the active thread
                         graph.update_state(config, {"data": {"current_map_item": merged_item}})
@@ -306,7 +308,10 @@ class OrchestratorService:
                 # This makes the status available for condition nodes
                 update_data = (payload or {}).copy()
                 update_data['status'] = command_status
-                graph.update_state(config, {"data": update_data}, as_node=transition_node)
+                # Deep merge into existing data to avoid overwriting prior context
+                latest_state = graph.get_state(config)
+                merged_data = self._deep_merge_dict(latest_state.values.get('data', {}) or {}, update_data)
+                graph.update_state(config, {"data": merged_data}, as_node=transition_node)
                 final_state = graph.invoke(None, config)
                 adapter.info(f"Successfully resumed and ran workflow to completion. Final state: {final_state}")
 
