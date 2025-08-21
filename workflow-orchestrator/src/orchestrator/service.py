@@ -385,30 +385,32 @@ class OrchestratorService:
                 try:
                     current_after_invoke = graph.get_state(config).values
                     current_node_name = (current_after_invoke.get('context', {}) or {}).get('current_node')
-                    if current_node_name:
-                        node_after = definition.get('nodes', {}).get(current_node_name, {})
-                        if node_after.get('type') == 'event_wait':
-                            start_from = node_after.get('on_event') or node_after.get('on_success')
-                            current_step_payload = {
-                                "name": current_node_name,
-                                "title": node_after.get("title", ""),
-                                "type": node_after.get("type", ""),
-                            }
-                            next_steps_payload = compute_next_steps(start_from, definition) if start_from else []
-                            adapter.info(
-                                f"TRACE:STEPS current={{'name': '{current_step_payload['name']}', 'type': '{current_step_payload['type']}'}} "
-                                f"next={[ns.get('name') for ns in next_steps_payload]} status=Started:EventWait"
-                            )
-                            self.event_publisher.publish_event(
-                                state=current_after_invoke,
-                                current_step=current_step_payload,
-                                next_steps=next_steps_payload,
-                                status="Started:EventWait",
-                                workflow_definition=definition
-                            )
-                except Exception:
-                    # Non-fatal: checkpointer may already have published
-                    pass
+                    node_after = definition.get('nodes', {}).get(current_node_name, {}) if current_node_name else {}
+                    adapter.info(
+                        f"GUARD:EVENT_WAIT check current_node={current_node_name}, type={node_after.get('type')}"
+                    )
+                    if node_after.get('type') == 'event_wait':
+                        start_from = node_after.get('on_event') or node_after.get('on_success')
+                        current_step_payload = {
+                            "name": current_node_name,
+                            "title": node_after.get("title", ""),
+                            "type": node_after.get("type", ""),
+                        }
+                        next_steps_payload = compute_next_steps(start_from, definition) if start_from else []
+                        adapter.info(
+                            f"TRACE:STEPS current={{'name': '{current_step_payload['name']}', 'type': '{current_step_payload['type']}'}} "
+                            f"next={[ns.get('name') for ns in next_steps_payload]} status=Started:EventWait"
+                        )
+                        adapter.info("GUARD:EVENT_WAIT publishing EventWaitStarted")
+                        self.event_publisher.publish_event(
+                            state=current_after_invoke,
+                            current_step=current_step_payload,
+                            next_steps=next_steps_payload,
+                            status="Started:EventWait",
+                            workflow_definition=definition
+                        )
+                except Exception as guard_err:
+                    adapter.warning(f"GUARD:EVENT_WAIT publish skipped due to: {guard_err}")
 
                 # If we are transitioning into a map_fork, attempt a drain-run ONLY if not currently interrupted.
                 transitioned_node_def = definition.get("nodes", {}).get(transition_node, {})
