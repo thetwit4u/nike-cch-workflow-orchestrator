@@ -381,6 +381,35 @@ class OrchestratorService:
                 final_state = graph.invoke(None, config)
                 adapter.info(f"Successfully resumed and ran workflow to completion. Final state: {final_state}")
 
+                # Ensure an EventWaitStarted event is published if we paused on an event_wait and no publisher fired
+                try:
+                    current_after_invoke = graph.get_state(config).values
+                    current_node_name = (current_after_invoke.get('context', {}) or {}).get('current_node')
+                    if current_node_name:
+                        node_after = definition.get('nodes', {}).get(current_node_name, {})
+                        if node_after.get('type') == 'event_wait':
+                            start_from = node_after.get('on_event') or node_after.get('on_success')
+                            current_step_payload = {
+                                "name": current_node_name,
+                                "title": node_after.get("title", ""),
+                                "type": node_after.get("type", ""),
+                            }
+                            next_steps_payload = compute_next_steps(start_from, definition) if start_from else []
+                            adapter.info(
+                                f"TRACE:STEPS current={{'name': '{current_step_payload['name']}', 'type': '{current_step_payload['type']}'}} "
+                                f"next={[ns.get('name') for ns in next_steps_payload]} status=Started:EventWait"
+                            )
+                            self.event_publisher.publish_event(
+                                state=current_after_invoke,
+                                current_step=current_step_payload,
+                                next_steps=next_steps_payload,
+                                status="Started:EventWait",
+                                workflow_definition=definition
+                            )
+                except Exception:
+                    # Non-fatal: checkpointer may already have published
+                    pass
+
                 # If we are transitioning into a map_fork, attempt a drain-run ONLY if not currently interrupted.
                 transitioned_node_def = definition.get("nodes", {}).get(transition_node, {})
                 if transitioned_node_def.get("type") == "map_fork":
