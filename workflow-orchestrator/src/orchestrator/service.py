@@ -382,7 +382,8 @@ class OrchestratorService:
                         state=event_state,
                         current_step=current_step_payload,
                         next_steps=next_steps_payload,
-                        status=status_label
+                        status=status_label,
+                        workflow_definition=definition
                     )
                 # --- ---
 
