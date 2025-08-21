@@ -82,8 +82,15 @@ class EventPublisher:
             event_type = "BranchEnded"
 
         raw_data = state.get("data", {}) or {}
-        # Fold current_map_item into the business context and exclude internals
-        folded = merge_branch_context(raw_data, raw_data.get("current_map_item") or {})
+        # Determine the most accurate branch item to fold into business context
+        context_obj = state.get("context", {}) or {}
+        branch_key = context_obj.get("branch_key")
+        map_items_by_key = (context_obj.get("map_items_by_key") or {}) if isinstance(context_obj, dict) else {}
+        branch_item_by_key = map_items_by_key.get(branch_key) if branch_key else None
+        branch_item = raw_data.get("current_map_item") or branch_item_by_key or {}
+
+        # Fold branch item into the business context and exclude internals
+        folded = merge_branch_context(raw_data, branch_item)
         business_context = {
             k: v for k, v in folded.items()
             if not (isinstance(k, str) and (k.startswith('_') or k == 'current_map_item'))

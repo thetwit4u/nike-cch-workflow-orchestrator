@@ -21,6 +21,7 @@ from orchestrator.event_publisher import EventPublisher
 from orchestrator.next_steps import compute_next_steps
 from orchestrator.state import WorkflowState
 from .library_nodes import _get_required_param
+from orchestrator.context_merge import merge_branch_context
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,31 @@ def handle_async_request(state: WorkflowState, node_config: dict, node_name: str
         # In this context, the next step is always the on_response node
         next_node_name = node_config.get("on_response")
         next_steps_payload = compute_next_steps(next_node_name, workflow_definition)
+
+        # Merge branch-scoped context into state.data so events and downstream nodes see it
+        try:
+            branch_key = state.get("context", {}).get("branch_key")
+            branch_item = (state.get("data", {}) or {}).get("current_map_item") or {}
+            # Promote the branch item into both data and context maps
+            if isinstance(branch_item, dict):
+                # Deep merge into data to reflect per-branch inputs
+                def _deep_merge(left: dict, right: dict) -> dict:
+                    if not isinstance(left, dict) or not isinstance(right, dict):
+                        return right
+                    merged = left.copy()
+                    for k, v in right.items():
+                        if k in merged and isinstance(merged[k], dict) and isinstance(v, dict):
+                            merged[k] = _deep_merge(merged[k], v)
+                        else:
+                            merged[k] = v
+                    return merged
+
+                merged_data = _deep_merge(state.get("data", {}) or {}, branch_item)
+                state["data"] = merged_data
+                if branch_key:
+                    state.setdefault("context", {}).setdefault("map_items_by_key", {})[branch_key] = branch_item
+        except Exception:
+            pass
 
         event_publisher.publish_event(
             state=state,
