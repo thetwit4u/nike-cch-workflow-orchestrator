@@ -189,6 +189,9 @@ class OrchestratorService:
 
                 # Universal logic for resuming from a pause
                 adapter.info(f"Processing {command_type} for thread '{config['configurable']['thread_id']}'.")
+                adapter.info(
+                    f"DEBUG:MERGE start command_type={command_type}, branch_key={branch_key}, is_branch={is_branch_response}, payload_keys={list((payload or {}).keys())}"
+                )
                 
                 current_state = graph.get_state(config)
 
@@ -265,9 +268,17 @@ class OrchestratorService:
                     if is_branch_response and branch_key:
                         # Merge payload into current_map_item and persist to context map for continuity
                         existing_item = (current_state.values.get('data', {}) or {}).get('current_map_item')
+                        used_fallback = False
                         if not existing_item:
                             existing_item = (current_state.values.get('context', {}).get('map_items_by_key', {}) or {}).get(branch_key) or {}
+                            used_fallback = True
+                        adapter.info(
+                            f"DEBUG:MERGE base_item={'context.map_items_by_key' if used_fallback else 'data.current_map_item'}, base_keys={list(existing_item.keys()) if isinstance(existing_item, dict) else 'N/A'}"
+                        )
                         merged_item = self._deep_merge_dict(existing_item, payload or {})
+                        adapter.info(
+                            f"DEBUG:MERGE merged_item_keys={list(merged_item.keys()) if isinstance(merged_item, dict) else 'N/A'}"
+                        )
                         # Persist to both data and context maps on the active thread
                         graph.update_state(config, {"data": {"current_map_item": merged_item}})
                         graph.update_state(config, {"context": {"map_items_by_key": {branch_key: merged_item}}})
@@ -275,6 +286,7 @@ class OrchestratorService:
                         try:
                             if 'parent_config' in locals() and isinstance(parent_config, dict):
                                 graph.update_state(parent_config, {"context": {"map_items_by_key": {branch_key: merged_item}}})
+                                adapter.info("DEBUG:MERGE mirrored merged_item into parent context.map_items_by_key")
                         except Exception:
                             # Non-fatal; continue even if parent update fails
                             pass
@@ -284,6 +296,7 @@ class OrchestratorService:
                             # Attempt to resolve map_fork configuration to locate the list and branch key field
                             input_list_key = None
                             branch_key_prop = None
+                            chosen_fork = None
                             for node_name, ndef in (definition.get("nodes", {}) or {}).items():
                                 if ndef.get("type") == "map_fork":
                                     # Prefer the fork whose entry node is the interrupted async_request
@@ -291,24 +304,35 @@ class OrchestratorService:
                                     if entry and entry == interrupted_node:
                                         input_list_key = ndef.get("input_list_key")
                                         branch_key_prop = ndef.get("branch_key")
+                                        chosen_fork = node_name
                                         break
                                     # Fallback: remember a candidate if none matched yet
                                     if not input_list_key and ndef.get("input_list_key") and ndef.get("branch_key"):
                                         input_list_key = ndef.get("input_list_key")
                                         branch_key_prop = ndef.get("branch_key")
+                                        chosen_fork = node_name
 
                             if input_list_key and branch_key_prop:
+                                adapter.info(
+                                    f"DEBUG:MERGE list_config chosen_fork={chosen_fork}, input_list_key={input_list_key}, branch_key_prop={branch_key_prop}, branch_key={branch_key}"
+                                )
                                 latest = graph.get_state(config).values
                                 data_snapshot = latest.get('data', {}) or {}
                                 items = list(data_snapshot.get(input_list_key) or [])
+                                adapter.info(f"DEBUG:MERGE list_len_before={len(items)}")
                                 updated = False
                                 for idx, item in enumerate(items):
                                     if isinstance(item, dict) and item.get(branch_key_prop) == branch_key:
+                                        pre_keys = list(item.keys())
                                         items[idx] = self._deep_merge_dict(item, payload or {})
+                                        adapter.info(
+                                            f"DEBUG:MERGE list_item_merge idx={idx}, pre_keys={pre_keys}, post_keys={list(items[idx].keys())}"
+                                        )
                                         updated = True
                                         break
                                 if updated:
                                     graph.update_state(config, {"data": {input_list_key: items}})
+                                    adapter.info("DEBUG:MERGE updated active thread list with merged branch payload")
                                     # Also mirror to parent if possible
                                     try:
                                         if 'parent_config' in locals() and isinstance(parent_config, dict):
@@ -316,11 +340,19 @@ class OrchestratorService:
                                             parent_items = list((parent_latest.get('data', {}) or {}).get(input_list_key) or [])
                                             for pidx, pitem in enumerate(parent_items):
                                                 if isinstance(pitem, dict) and pitem.get(branch_key_prop) == branch_key:
+                                                    pre_pkeys = list(pitem.keys())
                                                     parent_items[pidx] = self._deep_merge_dict(pitem, payload or {})
+                                                    adapter.info(
+                                                        f"DEBUG:MERGE parent_list_item_merge idx={pidx}, pre_keys={pre_pkeys}, post_keys={list(parent_items[pidx].keys())}"
+                                                    )
                                                     break
                                             graph.update_state(parent_config, {"data": {input_list_key: parent_items}})
+                                            adapter.info("DEBUG:MERGE updated parent thread list with merged branch payload")
                                     except Exception:
                                         pass
+                            else:
+                                adapter.info("DEBUG:MERGE could not resolve map_fork configuration for list merge")
+                                pass
                         except Exception:
                             # Non-fatal; continue if list merge cannot be applied
                             pass
@@ -339,8 +371,13 @@ class OrchestratorService:
                     # Reflect merged data and status in event publication
                     event_state['data'] = self._deep_merge_dict(event_state.get('data', {}), payload or {})
                     event_state['data']['status'] = command_status
-
-                    status_label = "Ended:AsyncRequest" if command_type == 'ASYNC_RESP' else "Ended:EventWait"
+                    try:
+                        status_label = "Ended:AsyncRequest" if command_type == 'ASYNC_RESP' else "Ended:EventWait"
+                        adapter.info(
+                            f"DEBUG:MERGE publish data_keys={list(event_state.get('data', {}).keys())}, status_label={status_label}, next_steps={[ns.get('name') for ns in next_steps_payload]}"
+                        )
+                    except Exception:
+                        pass
                     self.event_publisher.publish_event(
                         state=event_state,
                         current_step=current_step_payload,
