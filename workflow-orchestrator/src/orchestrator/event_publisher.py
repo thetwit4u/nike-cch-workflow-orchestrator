@@ -89,8 +89,57 @@ class EventPublisher:
         branch_item_by_key = map_items_by_key.get(branch_key) if branch_key else None
         branch_item = raw_data.get("current_map_item") or branch_item_by_key or {}
 
+        try:
+            logger.info(
+                f"DEBUG:MERGE publisher branch_key={branch_key}, branch_item_keys={list(branch_item.keys()) if isinstance(branch_item, dict) else 'N/A'}"
+            )
+            if isinstance(raw_data.get("importFilingPacks"), list) and isinstance(branch_item, dict):
+                match_key = branch_item.get("filingPackId")
+                idx = None
+                for i, it in enumerate(raw_data.get("importFilingPacks") or []):
+                    if isinstance(it, dict) and it.get("filingPackId") == match_key:
+                        idx = i
+                        break
+                if idx is not None:
+                    pre_keys = list((raw_data["importFilingPacks"][idx] or {}).keys())
+                    logger.info(
+                        f"DEBUG:MERGE publisher list_match index={idx}, pre_keys={pre_keys}"
+                    )
+        except Exception:
+            pass
+
         # Fold branch item into the business context and exclude internals
         folded = merge_branch_context(raw_data, branch_item)
+
+        # Ensure the matching item in importFilingPacks reflects the branch_item (deep merge on the specific element)
+        try:
+            if isinstance(folded.get("importFilingPacks"), list) and isinstance(branch_item, dict):
+                match_key = branch_item.get("filingPackId") or branch_key
+                if match_key:
+                    packs = list(folded.get("importFilingPacks") or [])
+                    for i, it in enumerate(packs):
+                        if isinstance(it, dict) and it.get("filingPackId") == match_key:
+                            # Deep-merge into the matched pack element
+                            def _deep_merge(left: dict, right: dict) -> dict:
+                                if not isinstance(left, dict) or not isinstance(right, dict):
+                                    return right
+                                merged = left.copy()
+                                for k, v in right.items():
+                                    if k in merged and isinstance(merged[k], dict) and isinstance(v, dict):
+                                        merged[k] = _deep_merge(merged[k], v)
+                                    else:
+                                        merged[k] = v
+                                return merged
+                            pre_keys = list(it.keys())
+                            packs[i] = _deep_merge(it, branch_item)
+                            logger.info(
+                                f"DEBUG:MERGE publisher list_element_merge idx={i}, pre_keys={pre_keys}, post_keys={list(packs[i].keys())}"
+                            )
+                            folded["importFilingPacks"] = packs
+                            break
+        except Exception:
+            pass
+
         business_context = {
             k: v for k, v in folded.items()
             if not (isinstance(k, str) and (k.startswith('_') or k == 'current_map_item'))
