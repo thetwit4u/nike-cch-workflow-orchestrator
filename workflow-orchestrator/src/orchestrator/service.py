@@ -383,11 +383,19 @@ class OrchestratorService:
 
                 # Ensure an EventWaitStarted event is published if we paused on an event_wait and no publisher fired
                 try:
-                    current_after_invoke = graph.get_state(config).values
-                    current_node_name = (current_after_invoke.get('context', {}) or {}).get('current_node')
+                    # Prefer the state returned by invoke to avoid stale reads
+                    state_values_final = final_state if isinstance(final_state, dict) else None
+                    state_values_live = graph.get_state(config).values
+                    chosen_state = state_values_final or state_values_live
+                    final_node = (state_values_final or {}).get('context', {}).get('current_node') if state_values_final else None
+                    live_node = (state_values_live.get('context', {}) or {}).get('current_node')
+                    adapter.info(
+                        f"GUARD:EVENT_WAIT check final_node={final_node}, live_node={live_node}"
+                    )
+                    current_node_name = final_node or live_node
                     node_after = definition.get('nodes', {}).get(current_node_name, {}) if current_node_name else {}
                     adapter.info(
-                        f"GUARD:EVENT_WAIT check current_node={current_node_name}, type={node_after.get('type')}"
+                        f"GUARD:EVENT_WAIT resolved current_node={current_node_name}, type={node_after.get('type')}"
                     )
                     if node_after.get('type') == 'event_wait':
                         start_from = node_after.get('on_event') or node_after.get('on_success')
@@ -403,7 +411,7 @@ class OrchestratorService:
                         )
                         adapter.info("GUARD:EVENT_WAIT publishing EventWaitStarted")
                         self.event_publisher.publish_event(
-                            state=current_after_invoke,
+                            state=chosen_state,
                             current_step=current_step_payload,
                             next_steps=next_steps_payload,
                             status="Started:EventWait",
