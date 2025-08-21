@@ -9,6 +9,7 @@ from lib.langgraph_checkpoint_dynamodb.langgraph_checkpoint_dynamodb.config impo
 from orchestrator.graph_builder import GraphBuilder
 from orchestrator.event_publishing_checkpointer import EventPublishingCheckpointer
 from orchestrator.event_publisher import EventPublisher
+from orchestrator.next_steps import compute_next_steps
 from utils.logging_adapter import WorkflowIdAdapter
 from clients.s3_client import S3Client
 from langgraph.graph.graph import CompiledGraph
@@ -188,6 +189,7 @@ class OrchestratorService:
 
                 # Universal logic for resuming from a pause
                 adapter.info(f"Processing {command_type} for thread '{config['configurable']['thread_id']}'.")
+                # TRACE:STEPS logging is emitted at publish time
                 
                 current_state = graph.get_state(config)
 
@@ -259,34 +261,164 @@ class OrchestratorService:
                     
 
 
-                if command_type == 'ASYNC_RESP':
+                if command_type in ('ASYNC_RESP', 'EVENT_WAIT_RESP'):
+                    # If this is a branch response, merge payload into the map item (both data.current_map_item and context map)
+                    if is_branch_response and branch_key:
+                        # Merge payload into current_map_item and persist to context map for continuity
+                        existing_item = (current_state.values.get('data', {}) or {}).get('current_map_item')
+                        used_fallback = False
+                        if not existing_item:
+                            existing_item = (current_state.values.get('context', {}).get('map_items_by_key', {}) or {}).get(branch_key) or {}
+                            used_fallback = True
+                        # remove verbose merge tracing
+                        merged_item = self._deep_merge_dict(existing_item, payload or {})
+                        # remove verbose merge tracing
+                        # Persist to both data and context maps on the active thread
+                        graph.update_state(config, {"data": {"current_map_item": merged_item}})
+                        graph.update_state(config, {"context": {"map_items_by_key": {branch_key: merged_item}}})
+                        # Also persist to the parent thread's context map so subsequent responses can restore state
+                        try:
+                            if 'parent_config' in locals() and isinstance(parent_config, dict):
+                                graph.update_state(parent_config, {"context": {"map_items_by_key": {branch_key: merged_item}}})
+                                # mirrored into parent context
+                        except Exception:
+                            # Non-fatal; continue even if parent update fails
+                            pass
+
+                        # Additionally, merge the payload into the corresponding item within the parent data list
+                        try:
+                            # Attempt to resolve map_fork configuration to locate the list and branch key field
+                            input_list_key = None
+                            branch_key_prop = None
+                            chosen_fork = None
+                            for node_name, ndef in (definition.get("nodes", {}) or {}).items():
+                                if ndef.get("type") == "map_fork":
+                                    # Prefer the fork whose entry node is the interrupted async_request
+                                    entry = ndef.get("branch_entry_node")
+                                    if entry and entry == interrupted_node:
+                                        input_list_key = ndef.get("input_list_key")
+                                        branch_key_prop = ndef.get("branch_key")
+                                        chosen_fork = node_name
+                                        break
+                                    # Fallback: remember a candidate if none matched yet
+                                    if not input_list_key and ndef.get("input_list_key") and ndef.get("branch_key"):
+                                        input_list_key = ndef.get("input_list_key")
+                                        branch_key_prop = ndef.get("branch_key")
+                                        chosen_fork = node_name
+
+                            if input_list_key and branch_key_prop:
+                                # remove verbose list config tracing
+                                latest = graph.get_state(config).values
+                                data_snapshot = latest.get('data', {}) or {}
+                                items = list(data_snapshot.get(input_list_key) or [])
+                                # remove verbose list length tracing
+                                updated = False
+                                for idx, item in enumerate(items):
+                                    if isinstance(item, dict) and item.get(branch_key_prop) == branch_key:
+                                        items[idx] = self._deep_merge_dict(item, payload or {})
+                                        updated = True
+                                        break
+                                if updated:
+                                    graph.update_state(config, {"data": {input_list_key: items}})
+                                    # active thread list updated
+                                    # Also mirror to parent if possible
+                                    try:
+                                        if 'parent_config' in locals() and isinstance(parent_config, dict):
+                                            parent_latest = graph.get_state(parent_config).values
+                                            parent_items = list((parent_latest.get('data', {}) or {}).get(input_list_key) or [])
+                                            for pidx, pitem in enumerate(parent_items):
+                                                if isinstance(pitem, dict) and pitem.get(branch_key_prop) == branch_key:
+                                                    parent_items[pidx] = self._deep_merge_dict(pitem, payload or {})
+                                                    break
+                                            graph.update_state(parent_config, {"data": {input_list_key: parent_items}})
+                                            # parent thread list updated
+                                    except Exception:
+                                        pass
+                            else:
+                                # could not resolve map_fork configuration for list merge
+                                pass
+                        except Exception:
+                            # Non-fatal; continue if list merge cannot be applied
+                            pass
+
+                    # Re-read current state after updates so event publication reflects merged data
+                    current_state = graph.get_state(config)
+
+                    # Prepare publication if applicable
                     current_step_payload = {
                         "name": interrupted_node,
                         "title": node_def.get("title", ""),
                         "type": node_def.get("type", ""),
                     }
-                    next_steps_payload = self._find_next_significant_nodes(transition_node, definition)
-                    # Create a temporary state for the event publisher
+                    next_steps_payload = compute_next_steps(transition_node, definition)
                     event_state = current_state.values.copy()
-                    event_state['data'] = self._deep_merge_dict(event_state.get('data', {}), payload)
+                    # Reflect merged data and status in event publication
+                    event_state['data'] = self._deep_merge_dict(event_state.get('data', {}), payload or {})
                     event_state['data']['status'] = command_status
-
+                    # TRACE:STEPS publish logging
+                    status_label = "Ended:AsyncRequest" if command_type == 'ASYNC_RESP' else "Ended:EventWait"
+                    adapter.info(
+                        f"TRACE:STEPS current={{'name': '{current_step_payload['name']}', 'type': '{current_step_payload['type']}'}} next={[ns.get('name') for ns in next_steps_payload]} status={status_label}"
+                    )
                     self.event_publisher.publish_event(
                         state=event_state,
                         current_step=current_step_payload,
                         next_steps=next_steps_payload,
-                        status="Ended:AsyncRequest"
+                        status=status_label,
+                        workflow_definition=definition
                     )
                 # --- ---
 
 
                 # Merge the command's status and payload into the state's data channel
                 # This makes the status available for condition nodes
-                update_data = payload.copy()
+                update_data = (payload or {}).copy()
                 update_data['status'] = command_status
-                graph.update_state(config, {"data": update_data}, as_node=transition_node)
+                # Deep merge into existing data to avoid overwriting prior context
+                latest_state = graph.get_state(config)
+                merged_data = self._deep_merge_dict(latest_state.values.get('data', {}) or {}, update_data)
+                graph.update_state(config, {"data": merged_data}, as_node=transition_node)
                 final_state = graph.invoke(None, config)
                 adapter.info(f"Successfully resumed and ran workflow to completion. Final state: {final_state}")
+
+                # Ensure an EventWaitStarted event is published if we paused on an event_wait and no publisher fired
+                try:
+                    # Prefer the state returned by invoke to avoid stale reads
+                    state_values_final = final_state if isinstance(final_state, dict) else None
+                    state_values_live = graph.get_state(config).values
+                    chosen_state = state_values_final or state_values_live
+                    final_node = (state_values_final or {}).get('context', {}).get('current_node') if state_values_final else None
+                    live_node = (state_values_live.get('context', {}) or {}).get('current_node')
+                    adapter.info(
+                        f"GUARD:EVENT_WAIT check final_node={final_node}, live_node={live_node}"
+                    )
+                    current_node_name = final_node or live_node
+                    node_after = definition.get('nodes', {}).get(current_node_name, {}) if current_node_name else {}
+                    adapter.info(
+                        f"GUARD:EVENT_WAIT resolved current_node={current_node_name}, type={node_after.get('type')}"
+                    )
+                    if node_after.get('type') == 'event_wait':
+                        start_from = node_after.get('on_event') or node_after.get('on_success')
+                        current_step_payload = {
+                            "name": current_node_name,
+                            "title": node_after.get("title", ""),
+                            "type": node_after.get("type", ""),
+                        }
+                        next_steps_payload = compute_next_steps(start_from, definition) if start_from else []
+                        adapter.info(
+                            f"TRACE:STEPS current={{'name': '{current_step_payload['name']}', 'type': '{current_step_payload['type']}'}} "
+                            f"next={[ns.get('name') for ns in next_steps_payload]} status=Started:EventWait"
+                        )
+                        adapter.info("GUARD:EVENT_WAIT publishing EventWaitStarted")
+                        self.event_publisher.publish_event(
+                            state=chosen_state,
+                            current_step=current_step_payload,
+                            next_steps=next_steps_payload,
+                            status="Started:EventWait",
+                            workflow_definition=definition
+                        )
+                except Exception as guard_err:
+                    adapter.warning(f"GUARD:EVENT_WAIT publish skipped due to: {guard_err}")
 
                 # If we are transitioning into a map_fork, attempt a drain-run ONLY if not currently interrupted.
                 transitioned_node_def = definition.get("nodes", {}).get(transition_node, {})
@@ -390,38 +522,4 @@ class OrchestratorService:
                     return key.replace("branch:to:", "")
         return None
 
-    def _find_next_significant_nodes(self, start_node_name: str, workflow_definition: Dict[str, Any]) -> list[Dict[str, Any]]:
-        """
-        Traverses the workflow definition from a starting node to find the next
-        significant nodes (async_request or end).
-        """
-        significant_nodes = []
-        nodes_to_visit = [start_node_name]
-        visited_nodes = set()
-
-        while nodes_to_visit:
-            current_node_name = nodes_to_visit.pop(0)
-            if current_node_name in visited_nodes:
-                continue
-            visited_nodes.add(current_node_name)
-
-            node_def = workflow_definition.get("nodes", {}).get(current_node_name, {})
-            node_type = node_def.get("type")
-
-            if node_type in ["async_request", "end"]:
-                significant_nodes.append({
-                    "name": current_node_name,
-                    "title": node_def.get("title", ""),
-                    "type": node_type,
-                })
-            else:
-                # Follow the success path for other nodes
-                next_node = node_def.get("on_success") or node_def.get("on_response")
-                if next_node:
-                    nodes_to_visit.append(next_node)
-                # Handle conditional branches
-                elif node_type == "condition":
-                    for branch_node in node_def.get("branches", {}).values():
-                        nodes_to_visit.append(branch_node)
-
-        return significant_nodes
+    

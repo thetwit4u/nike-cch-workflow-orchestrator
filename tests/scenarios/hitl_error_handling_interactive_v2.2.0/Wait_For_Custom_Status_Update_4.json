@@ -1,0 +1,30 @@
+{
+    "command": {
+        "type": "EVENT",
+        "id": "d290f1ee-6c54-4b01-90e6-d701748f0854",
+        "source": "custom-status-emitter",
+        "timestamp": "2025-08-11T10:03:00Z",
+        "payload": {
+            "customStatus": {
+                "filingPackId": "fpk-12345-002",
+                "latestStatus": {
+                    "status": "ACCEPTED",
+                    "message": "The filing pack has been accepted by the external system.",
+                    "timestamp": "2025-08-11T10:03:00Z"
+                },
+                "statuses": [
+                    {
+                        "status": "SUBMITTED",
+                        "message": "The filing pack has been submitted to the external system.",
+                        "timestamp": "2025-08-11T10:01:00Z"
+                    },
+                    {
+                        "status": "ACCEPTED",
+                        "message": "The filing pack has been accepted by the external system.",
+                        "timestamp": "2025-08-11T10:03:00Z"
+                    }
+                ]
+            }
+        }
+    }
+}

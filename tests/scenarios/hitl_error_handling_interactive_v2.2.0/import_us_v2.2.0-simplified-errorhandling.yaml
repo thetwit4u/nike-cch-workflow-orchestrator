@@ -1,0 +1,128 @@
+# yaml-language-server: $schema=../../../workflow-orchestrator/src/schemas/json-schema/workflow/workflow-definition.schema.json
+schema_version: "1.1.0"
+workflow_name: "Simplified Import US Workflow v2.2.0"
+workflow_id: "import_us_v1_simplified_v2.2.0"
+entry_point: Enrich_Consignment
+
+initial_context:
+  - consignmentId
+  - consignmentURI
+
+nodes:
+  Enrich_Consignment:
+    type: async_request
+    title: Enrich Consignment
+    capability_id: import#enrich_consignment
+    input_keys:
+      - consignmentId
+      - consignmentURI
+    request_output_keys:
+      - consignmentImportEnrichedId
+      - consignmentImportEnrichedURI
+      - consignmentImportExtId
+      - consignmentImportExtURI
+    on_response: Check_Enrichment_Response_Status
+    on_failure: Handle_Error
+
+  Check_Enrichment_Response_Status:
+    type: condition
+    title: Check Enrichment Response Status
+    condition_on_key: status
+    branches:
+      SUCCESS: Create_Filing_Packs
+      ERROR: Wait_Enrich_Exception_Resolution
+    on_failure: Handle_Error
+
+  Create_Filing_Packs:
+    type: async_request
+    title: Create Filing Packs
+    capability_id: import#create_filingpacks
+    input_keys:
+      - consignmentImportEnrichedId
+      - consignmentImportEnrichedURI
+      - consignmentImportExtId
+      - consignmentImportExtURI
+    request_output_keys:
+      - importFilingPacks
+    on_response: Submit_Import_Filing_Fork
+    on_failure: End_Workflow
+
+  Submit_Import_Filing_Fork:
+    type: map_fork
+    title: Fork for each filing pack
+    input_list_key: importFilingPacks
+    branch_key: filingPackId
+    branch_entry_node: Submit_Import_Filing
+    on_failure: Handle_Error
+
+  Submit_Import_Filing:
+    type: async_request
+    title: Submit Import Filing
+    capability_id: declarationcommunicator#submit_import_filing
+    input_keys:
+      - current_map_item
+    request_output_keys:
+      - submissionStatus
+    on_response: Check_Submit_Response
+    on_failure: Handle_Error # This should be a branch-specific error handler
+
+  Check_Submit_Response:
+    type: condition
+    title: Check Submit Response
+    condition_on_key: submissionStatus
+    branches:
+      SUCCESS: Wait_For_Custom_Status_Update
+      ERROR: Handle_Error # This should be a branch-specific error handler
+    on_failure: Handle_Error
+
+  Wait_For_Custom_Status_Update:
+    type: event_wait
+    title: Wait for Custom Status Update
+    on_event: Check_Custom_Status
+    on_failure: Handle_Error
+
+  Check_Custom_Status:
+    type: condition
+    title: Check Custom Status
+    condition_on_key: customStatus.latestStatus.status
+    branches:
+      RELEASED: End_Branch # This will be the end of the branch
+      _default: Wait_For_Custom_Status_Update
+    on_failure: Handle_Error
+
+  End_Branch:
+    type: end_branch
+    title: End of Branch
+
+  Join_Filing_Pack_Submissions:
+    type: join
+    title: Join Filing Pack Submissions
+    join_branches:
+      - Submit_Import_Filing_Fork
+    on_success: End_Workflow
+    on_failure: Handle_Error
+
+  Clear_Enrichment_Status:
+    type: set_state
+    title: Clear Enrichment Status
+    static_outputs:
+      status: null
+    on_success: Enrich_Consignment
+
+  Wait_Enrich_Exception_Resolution:
+    type: event_wait
+    title: Wait for Enrich Exception Resolution
+    on_success: Clear_Enrichment_Status # Retry the node
+    on_failure: Handle_Error
+
+  Handle_Error:
+    type: log_error
+    title: "Generic Error Handler"
+    default_error_code: "GEN-001"
+    message_from_context_key: "_internalError"
+    default_message: "A general error occurred in the workflow."
+    on_success: End_Workflow   
+
+  End_Workflow:
+    type: end
+    title: End Workflow

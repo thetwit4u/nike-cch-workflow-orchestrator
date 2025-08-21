@@ -135,6 +135,32 @@ def handle_register_branch(state: WorkflowState, config: RunnableConfig, checkpo
             writes.append((f"context.map_items_by_key.{branch_key}", current_map_item))
         checkpointer.put_writes(parent_config_for_put, writes, child_thread_id)
 
+        # Merge the branch item into the running state's data for this branch thread
+        try:
+            if isinstance(current_map_item, dict):
+                # Deep merge current_map_item into state["data"]
+                def _deep_merge(left: dict, right: dict) -> dict:
+                    if not isinstance(left, dict) or not isinstance(right, dict):
+                        return right
+                    merged = left.copy()
+                    for k, v in right.items():
+                        if k in merged and isinstance(merged[k], dict) and isinstance(v, dict):
+                            merged[k] = _deep_merge(merged[k], v)
+                        else:
+                            merged[k] = v
+                    return merged
+
+                state_data = state.get("data", {})
+                state["data"] = _deep_merge(state_data, current_map_item)
+
+                # Ensure the in-memory context also tracks the item by branch key for this thread
+                ctx = state.setdefault("context", {})
+                map_items = ctx.setdefault("map_items_by_key", {})
+                map_items[branch_key] = current_map_item
+        except Exception:
+            # Non-fatal; state merge is best-effort here
+            pass
+
     except Exception as e:
         logger.exception("Error in handle_register_branch")
         # This is a critical internal error.

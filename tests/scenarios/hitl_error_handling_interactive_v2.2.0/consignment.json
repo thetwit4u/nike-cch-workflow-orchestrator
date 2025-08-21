@@ -1,0 +1,8 @@
+{
+    "consignment": {
+        "consignmentId": "test-12345",
+        "consignmentURI": "s3://cch-consignments/consignment-12345.json",
+        "plannedDischargeDate": "2025-08-01T10:00:00Z",
+        "totalShipmentCount": 1
+    }
+}
