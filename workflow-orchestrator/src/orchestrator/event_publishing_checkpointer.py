@@ -78,8 +78,11 @@ class EventPublishingCheckpointer(BaseCheckpointSaver):
                         "type": next_node_def.get("type", ""),
                     })
                 
-                logger.info(f"Publishing event for node: {current_node_name} (Type: {current_node_type}, Status: {status}) -> Next: {[n['name'] for n in next_steps_payload]}")
-                self.event_publisher.publish_event(state, current_step_payload, next_steps_payload, status)
+                logger.info(
+                    f"TRACE:STEPS current={{'name': '{current_step_payload['name']}', 'type': '{current_step_payload['type']}'}} "
+                    f"next={[n['name'] for n in next_steps_payload]} status={status}"
+                )
+                self.event_publisher.publish_event(state, current_step_payload, next_steps_payload, status, self.workflow_definition)
             elif current_node_type == "event_wait":
                 status = "Started:EventWait"
 
@@ -94,9 +97,10 @@ class EventPublishingCheckpointer(BaseCheckpointSaver):
                 next_steps_payload = compute_next_steps(start_from, self.workflow_definition) if start_from else []
 
                 logger.info(
-                    f"Publishing event for node: {current_node_name} (Type: {current_node_type}, Status: {status})"
+                    f"TRACE:STEPS current={{'name': '{current_step_payload['name']}', 'type': '{current_step_payload['type']}'}} "
+                    f"next={[n['name'] for n in next_steps_payload]} status={status}"
                 )
-                self.event_publisher.publish_event(state, current_step_payload, next_steps_payload, status)
+                self.event_publisher.publish_event(state, current_step_payload, next_steps_payload, status, self.workflow_definition)
             elif current_node_type == "map_fork":
                 status = "Started:MapFork"
 
@@ -109,9 +113,10 @@ class EventPublishingCheckpointer(BaseCheckpointSaver):
                 next_steps_payload = compute_next_steps(current_node_name, self.workflow_definition)
 
                 logger.info(
-                    f"Publishing event for node: {current_node_name} (Type: {current_node_type}, Status: {status})"
+                    f"TRACE:STEPS current={{'name': '{current_step_payload['name']}', 'type': '{current_step_payload['type']}'}} "
+                    f"next={[n['name'] for n in next_steps_payload]} status={status}"
                 )
-                self.event_publisher.publish_event(state, current_step_payload, next_steps_payload, status)
+                self.event_publisher.publish_event(state, current_step_payload, next_steps_payload, status, self.workflow_definition)
             elif current_node_type == "end_branch":
                 status = "Ended:Branch"
 
@@ -167,9 +172,10 @@ class EventPublishingCheckpointer(BaseCheckpointSaver):
                         ]
 
                 logger.info(
-                    f"Publishing event for node: {current_node_name} (Type: {current_node_type}, Status: {status})"
+                    f"TRACE:STEPS current={{'name': '{current_step_payload['name']}', 'type': '{current_step_payload['type']}'}} "
+                    f"next={[n['name'] for n in next_steps_payload]} status={status}"
                 )
-                self.event_publisher.publish_event(state, current_step_payload, next_steps_payload, status)
+                self.event_publisher.publish_event(state, current_step_payload, next_steps_payload, status, self.workflow_definition)
 
         except Exception as e:
             logger.error(f"Error publishing event after saving checkpoint: {e}", exc_info=True)

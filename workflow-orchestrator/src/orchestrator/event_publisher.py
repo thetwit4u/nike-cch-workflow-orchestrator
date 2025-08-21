@@ -89,24 +89,7 @@ class EventPublisher:
         branch_item_by_key = map_items_by_key.get(branch_key) if branch_key else None
         branch_item = raw_data.get("current_map_item") or branch_item_by_key or {}
 
-        try:
-            logger.info(
-                f"DEBUG:MERGE publisher branch_key={branch_key}, branch_item_keys={list(branch_item.keys()) if isinstance(branch_item, dict) else 'N/A'}"
-            )
-            if isinstance(raw_data.get("importFilingPacks"), list) and isinstance(branch_item, dict):
-                match_key = branch_item.get("filingPackId")
-                idx = None
-                for i, it in enumerate(raw_data.get("importFilingPacks") or []):
-                    if isinstance(it, dict) and it.get("filingPackId") == match_key:
-                        idx = i
-                        break
-                if idx is not None:
-                    pre_keys = list((raw_data["importFilingPacks"][idx] or {}).keys())
-                    logger.info(
-                        f"DEBUG:MERGE publisher list_match index={idx}, pre_keys={pre_keys}"
-                    )
-        except Exception:
-            pass
+        # removed publisher merge debug logs
 
         # Fold branch item into the business context and exclude internals
         folded = merge_branch_context(raw_data, branch_item)
@@ -154,11 +137,7 @@ class EventPublisher:
                                     else:
                                         merged[k] = v
                                 return merged
-                            pre_keys = list(it.keys())
                             packs[i] = _deep_merge(it, branch_item)
-                            logger.info(
-                                f"DEBUG:MERGE publisher list_element_merge idx={i}, list_key={parent_list_key}, id_key={branch_id_key}, pre_keys={pre_keys}, post_keys={list(packs[i].keys())}"
-                            )
                             folded[parent_list_key] = packs
                             break
         except Exception:
@@ -182,12 +161,7 @@ class EventPublisher:
                     if key in branch_item:
                         business_context.pop(key, None)
                         dropped.append(key)
-            try:
-                logger.info(
-                    f"DEBUG:MERGE publisher dropped_top_level_keys={dropped}, parent_list_key={parent_list_key}, id_key={branch_id_key}"
-                )
-            except Exception:
-                pass
+            # removed publisher drop-top-level debug logs
         messages = business_context.pop("messages", [])
 
         return {
