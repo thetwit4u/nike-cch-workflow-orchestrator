@@ -1,0 +1,10 @@
+{
+    "command": "capability_response",
+    "status": "SUCCESS",
+    "data": {
+        "consignmentImportEnrichedId": "enriched-12345",
+        "consignmentImportEnrichedURI": "s3://cch-enriched/enriched-consignment.json",
+        "consignmentImportExtId": "EXT-12345",
+        "consignmentImportExtURI": "s3://cch-ext/ext-consignment.json"
+    }
+}
