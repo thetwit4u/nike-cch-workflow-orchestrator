@@ -279,6 +279,52 @@ class OrchestratorService:
                             # Non-fatal; continue even if parent update fails
                             pass
 
+                        # Additionally, merge the payload into the corresponding item within the parent data list
+                        try:
+                            # Attempt to resolve map_fork configuration to locate the list and branch key field
+                            input_list_key = None
+                            branch_key_prop = None
+                            for node_name, ndef in (definition.get("nodes", {}) or {}).items():
+                                if ndef.get("type") == "map_fork":
+                                    # Prefer the fork whose entry node is the interrupted async_request
+                                    entry = ndef.get("branch_entry_node")
+                                    if entry and entry == interrupted_node:
+                                        input_list_key = ndef.get("input_list_key")
+                                        branch_key_prop = ndef.get("branch_key")
+                                        break
+                                    # Fallback: remember a candidate if none matched yet
+                                    if not input_list_key and ndef.get("input_list_key") and ndef.get("branch_key"):
+                                        input_list_key = ndef.get("input_list_key")
+                                        branch_key_prop = ndef.get("branch_key")
+
+                            if input_list_key and branch_key_prop:
+                                latest = graph.get_state(config).values
+                                data_snapshot = latest.get('data', {}) or {}
+                                items = list(data_snapshot.get(input_list_key) or [])
+                                updated = False
+                                for idx, item in enumerate(items):
+                                    if isinstance(item, dict) and item.get(branch_key_prop) == branch_key:
+                                        items[idx] = self._deep_merge_dict(item, payload or {})
+                                        updated = True
+                                        break
+                                if updated:
+                                    graph.update_state(config, {"data": {input_list_key: items}})
+                                    # Also mirror to parent if possible
+                                    try:
+                                        if 'parent_config' in locals() and isinstance(parent_config, dict):
+                                            parent_latest = graph.get_state(parent_config).values
+                                            parent_items = list((parent_latest.get('data', {}) or {}).get(input_list_key) or [])
+                                            for pidx, pitem in enumerate(parent_items):
+                                                if isinstance(pitem, dict) and pitem.get(branch_key_prop) == branch_key:
+                                                    parent_items[pidx] = self._deep_merge_dict(pitem, payload or {})
+                                                    break
+                                            graph.update_state(parent_config, {"data": {input_list_key: parent_items}})
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            # Non-fatal; continue if list merge cannot be applied
+                            pass
+
                     # Re-read current state after updates so event publication reflects merged data
                     current_state = graph.get_state(config)
 
